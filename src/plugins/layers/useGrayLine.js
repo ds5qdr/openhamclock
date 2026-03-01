@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { addMinimizeToggle } from './addMinimizeToggle.js';
 import { makeDraggable } from './makeDraggable.js';
 
 /**
@@ -86,21 +87,6 @@ function calculateHourAngle(date, longitude) {
   const hourAngle = (GMST + longitude - rightAscension + 360) % 360;
 
   return hourAngle;
-}
-
-// Calculate solar altitude for a given position and time
-function calculateSolarAltitude(date, latitude, longitude) {
-  const { declination } = calculateSolarPosition(date);
-  const hourAngle = calculateHourAngle(date, longitude);
-
-  const latRad = (latitude * Math.PI) / 180;
-  const decRad = (declination * Math.PI) / 180;
-  const haRad = (hourAngle * Math.PI) / 180;
-
-  const sinAlt = Math.sin(latRad) * Math.sin(decRad) + Math.cos(latRad) * Math.cos(decRad) * Math.cos(haRad);
-  const altitude = (Math.asin(sinAlt) * 180) / Math.PI;
-
-  return altitude;
 }
 
 // Unwrap longitude values to be continuous (no 360° jumps) and create world copies
@@ -224,83 +210,6 @@ function generateTerminatorLine(date, solarAltitude = 0, numPoints = 360) {
 
 // Make control panel draggable and minimizable
 
-function addMinimizeToggle(element, storageKey) {
-  if (!element) return;
-
-  const minimizeKey = storageKey + '-minimized';
-  const header = element.querySelector('div:first-child');
-  if (!header) return;
-
-  const content = Array.from(element.children).slice(1);
-  const contentWrapper = document.createElement('div');
-  contentWrapper.className = 'grayline-panel-content';
-  content.forEach((child) => contentWrapper.appendChild(child));
-  element.appendChild(contentWrapper);
-
-  const minimizeBtn = document.createElement('span');
-  minimizeBtn.className = 'grayline-minimize-btn';
-  minimizeBtn.innerHTML = '▼';
-  minimizeBtn.style.cssText = `
-    float: right;
-    cursor: pointer;
-    user-select: none;
-    padding: 0 4px;
-    margin: -2px -4px 0 0;
-    font-size: 10px;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-  `;
-  minimizeBtn.title = 'Minimize/Maximize';
-
-  minimizeBtn.addEventListener('mouseenter', () => {
-    minimizeBtn.style.opacity = '1';
-  });
-  minimizeBtn.addEventListener('mouseleave', () => {
-    minimizeBtn.style.opacity = '0.7';
-  });
-
-  header.style.display = 'flex';
-  header.style.justifyContent = 'space-between';
-  header.style.alignItems = 'center';
-  header.appendChild(minimizeBtn);
-
-  const isMinimized = localStorage.getItem(minimizeKey) === 'true';
-  if (isMinimized) {
-    contentWrapper.style.display = 'none';
-    minimizeBtn.innerHTML = '▶';
-    element.style.cursor = 'pointer';
-  }
-
-  const toggle = (e) => {
-    if (e && e.ctrlKey) return;
-
-    const isCurrentlyMinimized = contentWrapper.style.display === 'none';
-
-    if (isCurrentlyMinimized) {
-      contentWrapper.style.display = 'block';
-      minimizeBtn.innerHTML = '▼';
-      element.style.cursor = 'default';
-      localStorage.setItem(minimizeKey, 'false');
-    } else {
-      contentWrapper.style.display = 'none';
-      minimizeBtn.innerHTML = '▶';
-      element.style.cursor = 'pointer';
-      localStorage.setItem(minimizeKey, 'true');
-    }
-  };
-
-  header.addEventListener('click', (e) => {
-    if (e.target === header || e.target.tagName === 'DIV') {
-      toggle(e);
-    }
-  });
-
-  minimizeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggle(e);
-  });
-}
-
 export function useLayer({ enabled = false, opacity = 0.5, map = null }) {
   const [layers, setLayers] = useState([]);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -394,32 +303,32 @@ export function useLayer({ enabled = false, opacity = 0.5, map = null }) {
         const timeStr = now.toUTCString();
 
         container.innerHTML = `
-          <div style="font-weight: bold; margin-bottom: 8px; font-size: 12px;">🌅 Gray Line</div>
-          
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-bottom: 8px; font-size: 13px; color: #00b4ff;">🌅 Gray Line</div>
+
           <div style="margin-bottom: 8px; padding: 8px; background: var(--bg-tertiary); border-radius: 3px;">
             <div style="font-size: 9px; opacity: 0.7; margin-bottom: 2px;">UTC TIME</div>
             <div id="grayline-time" style="font-size: 10px; font-weight: bold;">${timeStr}</div>
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: flex; align-items: center; cursor: pointer;">
               <input type="checkbox" id="grayline-twilight" checked style="margin-right: 5px;" />
               <span>Show Twilight Zones</span>
             </label>
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: flex; align-items: center; cursor: pointer;">
               <input type="checkbox" id="grayline-enhanced" checked style="margin-right: 5px;" />
               <span>Enhanced DX Zone</span>
             </label>
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 3px;">Twilight Opacity: <span id="twilight-opacity-value">50</span>%</label>
             <input type="range" id="grayline-twilight-opacity" min="20" max="100" value="50" step="5" style="width: 100%;" />
           </div>
-          
+
           <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #555; font-size: 9px; opacity: 0.7;">
             <div>🌅 Gray line = enhanced HF propagation</div>
             <div style="margin-top: 4px;">Updates every minute</div>
@@ -454,7 +363,10 @@ export function useLayer({ enabled = false, opacity = 0.5, map = null }) {
         }
 
         makeDraggable(container, 'grayline-position');
-        addMinimizeToggle(container, 'grayline-position');
+        addMinimizeToggle(container, 'grayline-position', {
+          contentClassName: 'grayline-panel-content',
+          buttonClassName: 'grayline-minimize-btn',
+        });
       }
 
       // Add event listeners

@@ -46,17 +46,17 @@ The compose file loads both `stack.env` and `.env` automatically (both optional)
 
 ## Ports
 
-| Port | Protocol | Service |
-|------|----------|---------|
-| 3000 | TCP | Web UI |
-| 2237 | UDP | WSJT-X / JTDX |
-| 12060 | UDP | N1MM / DXLog contest logger |
+| Port  | Protocol | Service                     |
+| ----- | -------- | --------------------------- |
+| 3000  | TCP      | Web UI                      |
+| 2237  | UDP      | WSJT-X / JTDX               |
+| 12060 | UDP      | N1MM / DXLog contest logger |
 
 To change the web UI port on the host:
 
 ```yaml
 ports:
-  - '8080:3000'  # Access at http://localhost:8080
+  - '8080:3000' # Access at http://localhost:8080
 ```
 
 ## Reverse Proxy
