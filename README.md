@@ -802,7 +802,33 @@ Your `.env` file is never overwritten by updates, so your configuration is alway
 
 ### Local / Desktop
 
-The simplest option. Just need Node.js 20 or newer.
+Works on Linux, macOS, and Windows. Requires Node.js 18+ (22 LTS recommended) and Git.
+
+**One-line install (Linux / macOS):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/setup-linux.sh | bash
+```
+
+This clones the repo, installs dependencies, builds the frontend, creates a `.env` config file, and generates a `run.sh` launcher. After install, edit `~/openhamclock/.env` to set your `CALLSIGN` and `LOCATOR`, then start with `~/openhamclock/run.sh`.
+
+**Auto-start on boot (Linux with systemd — Ubuntu, Debian, Fedora, etc.):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/setup-linux.sh | bash -s -- --service
+```
+
+This does everything above plus creates a `systemd` service that starts OpenHamClock automatically on boot. Manage it with:
+
+```bash
+sudo systemctl restart openhamclock    # Restart (after .env changes)
+sudo systemctl status openhamclock     # Check status
+sudo journalctl -u openhamclock -f     # View logs
+```
+
+> **macOS note:** macOS does not use systemd, so the `--service` flag is not supported. Use `~/openhamclock/run.sh` to start manually, or run `npm run electron` for a native desktop window.
+
+**Manual install (all platforms including Windows):**
 
 ```bash
 git clone https://github.com/accius/openhamclock.git
@@ -816,7 +842,7 @@ Open [http://localhost:3000](http://localhost:3000).
 **Access from other devices on your LAN** (phone, tablet, another PC):
 
 1. Edit `.env` and set `HOST=0.0.0.0`
-2. Restart with `npm start`
+2. Restart with `npm start` (or `sudo systemctl restart openhamclock` if using the service)
 3. Open `http://<your-computer-ip>:3000` from the other device (e.g., `http://192.168.1.100:3000`)
 
 To find your local IP: run `ipconfig` (Windows) or `ifconfig` / `ip addr` (Mac/Linux).
@@ -1104,7 +1130,7 @@ openhamclock/
 ├── electron/                 # Electron desktop app wrapper (experimental)
 ├── scripts/                  # Setup and update scripts
 │   ├── setup-pi.sh               # Raspberry Pi one-line installer
-│   ├── setup-linux.sh            # Generic Linux installer
+│   ├── setup-linux.sh            # Linux / macOS installer (--service for systemd)
 │   ├── setup-windows.ps1         # Windows PowerShell installer
 │   └── update.sh                 # Update script (backup → pull → rebuild → restore)
 ├── Dockerfile                # Multi-stage Docker build
