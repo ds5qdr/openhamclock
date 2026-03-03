@@ -2033,6 +2033,80 @@ app.get('/api/solar-indices', async (req, res) => {
   }
 });
 
+// NASA SDO Solar Image Proxy — caches SDO/AIA images so clients don't hit NASA directly.
+// SDO's server is slow and rate-limits; this fetches once per 15 min per image type.
+const sdoImageCache = new Map(); // key: imageType → { buffer, contentType, timestamp }
+const SDO_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const SDO_STALE_SERVE = 6 * 60 * 60 * 1000; // Serve stale up to 6 hours
+const SDO_VALID_TYPES = new Set(['0193', '0304', '0171', '0094', 'HMIIC']);
+const SDO_NEGATIVE_CACHE = new Map(); // Prevent retry storm per type
+
+app.get('/api/solar/image/:type', async (req, res) => {
+  const type = req.params.type;
+  if (!SDO_VALID_TYPES.has(type)) {
+    return res.status(400).json({ error: 'Invalid image type' });
+  }
+
+  const cached = sdoImageCache.get(type);
+  const now = Date.now();
+
+  // Serve fresh cache
+  if (cached?.buffer && now - cached.timestamp < SDO_CACHE_TTL) {
+    res.set('Content-Type', cached.contentType || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=900');
+    res.set('X-SDO-Cache', 'hit');
+    return res.send(cached.buffer);
+  }
+
+  // Negative cache — don't hammer NASA if it just failed
+  const negTs = SDO_NEGATIVE_CACHE.get(type) || 0;
+  if (now - negTs < 60_000) {
+    // Serve stale if available
+    if (cached?.buffer && now - cached.timestamp < SDO_STALE_SERVE) {
+      res.set('Content-Type', cached.contentType || 'image/jpeg');
+      res.set('Cache-Control', 'public, max-age=60');
+      res.set('X-SDO-Cache', 'stale-backoff');
+      return res.send(cached.buffer);
+    }
+    return res.status(503).json({ error: 'SDO temporarily unavailable' });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const sdoRes = await fetch(`https://sdo.gsfc.nasa.gov/assets/img/latest/latest_256_${type}.jpg`, {
+      headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!sdoRes.ok) throw new Error(`SDO returned ${sdoRes.status}`);
+
+    const buffer = Buffer.from(await sdoRes.arrayBuffer());
+    const contentType = sdoRes.headers.get('content-type') || 'image/jpeg';
+
+    sdoImageCache.set(type, { buffer, contentType, timestamp: now });
+    SDO_NEGATIVE_CACHE.delete(type);
+
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=900');
+    res.set('X-SDO-Cache', 'miss');
+    return res.send(buffer);
+  } catch (e) {
+    logDebug(`[Solar] SDO image fetch failed (${type}): ${e.message}`);
+    SDO_NEGATIVE_CACHE.set(type, now);
+
+    // Serve stale on error
+    if (cached?.buffer && now - cached.timestamp < SDO_STALE_SERVE) {
+      res.set('Content-Type', cached.contentType || 'image/jpeg');
+      res.set('Cache-Control', 'public, max-age=60');
+      res.set('X-SDO-Cache', 'stale-error');
+      return res.send(cached.buffer);
+    }
+    return res.status(502).json({ error: 'Failed to fetch SDO image' });
+  }
+});
+
 // NASA Dial-A-Moon — proxies photorealistic moon image from NASA SVS
 // Image changes hourly, cached for 1 hour to avoid hammering NASA
 let moonImageCache = { buffer: null, contentType: null, timestamp: 0 };

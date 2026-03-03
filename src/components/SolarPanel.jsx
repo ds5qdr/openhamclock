@@ -140,7 +140,7 @@ export const SolarPanel = ({ solarIndices, forcedMode }) => {
     HMIIC: { name: 'HMI Int', desc: 'Visible' },
   };
 
-  const imageUrl = `https://sdo.gsfc.nasa.gov/assets/img/latest/latest_256_${imageType}.jpg?t=${imageTimestamp}`;
+  const imageUrl = `/api/solar/image/${imageType}?t=${imageTimestamp}`;
 
   const getKpColor = (value) => {
     if (value >= 7) return '#ff0000';
