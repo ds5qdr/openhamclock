@@ -2034,27 +2034,65 @@ app.get('/api/solar-indices', async (req, res) => {
 });
 
 // NASA SDO Solar Image Proxy — caches SDO/AIA images so clients don't hit NASA directly.
-// SDO's server is slow and rate-limits; this fetches once per 15 min per image type.
+// Multi-source: tries SDO direct first (works for self-hosters), then Helioviewer API (works from cloud).
 const sdoImageCache = new Map(); // key: imageType → { buffer, contentType, timestamp }
 const SDO_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const SDO_STALE_SERVE = 6 * 60 * 60 * 1000; // Serve stale up to 6 hours
 const SDO_VALID_TYPES = new Set(['0193', '0304', '0171', '0094', 'HMIIC']);
 const SDO_NEGATIVE_CACHE = new Map(); // Prevent retry storm per type
 
-// Helper: single fetch attempt to NASA SDO with timeout
-const fetchSDOImage = async (type, timeoutMs = 20000) => {
+// Helper: fetch from NASA SDO direct
+const fetchFromSDO = async (type, timeoutMs = 15000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const sdoRes = await fetch(`https://sdo.gsfc.nasa.gov/assets/img/latest/latest_256_${type}.jpg`, {
+    const res = await fetch(`https://sdo.gsfc.nasa.gov/assets/img/latest/latest_256_${type}.jpg`, {
       headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
       signal: controller.signal,
     });
     clearTimeout(timer);
-    if (!sdoRes.ok) throw new Error(`HTTP ${sdoRes.status}`);
-    const buffer = Buffer.from(await sdoRes.arrayBuffer());
-    const contentType = sdoRes.headers.get('content-type') || 'image/jpeg';
-    return { buffer, contentType };
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return { buffer, contentType: res.headers.get('content-type') || 'image/jpeg', source: 'SDO' };
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+};
+
+// Helper: fetch from Helioviewer takeScreenshot API (official NASA-funded SDO mirror)
+// Helioviewer layers format: [Observatory,Instrument,Detector,Measurement,visible,opacity]
+const HELIO_LAYERS = {
+  '0193': '[SDO,AIA,AIA,193,1,100]',
+  '0304': '[SDO,AIA,AIA,304,1,100]',
+  '0171': '[SDO,AIA,AIA,171,1,100]',
+  '0094': '[SDO,AIA,AIA,94,1,100]',
+  'HMIIC': '[SDO,HMI,HMI,continuum,1,100]',
+};
+
+const fetchFromHelioviewer = async (type, timeoutMs = 20000) => {
+  const layers = HELIO_LAYERS[type];
+  if (!layers) throw new Error(`No Helioviewer layer config for ${type}`);
+  const now = new Date().toISOString().replace(/\.\d+Z/, 'Z');
+  // imageScale 4.84 gives ~256px solar disk; display=true returns PNG directly
+  const url =
+    `https://api.helioviewer.org/v2/takeScreenshot/?` +
+    `date=${now}&imageScale=4.84088` +
+    `&layers=${encodeURIComponent(layers)}` +
+    `&events=&eventLabels=false&display=true&watermark=false` +
+    `&width=256&height=256&x0=0&y0=0`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length < 500) throw new Error(`Response too small (${buffer.length} bytes)`);
+    return { buffer, contentType: res.headers.get('content-type') || 'image/png', source: 'Helioviewer' };
   } catch (e) {
     clearTimeout(timer);
     throw e;
@@ -2075,11 +2113,11 @@ app.get('/api/solar/image/:type', async (req, res) => {
     res.set('Content-Type', cached.contentType || 'image/jpeg');
     res.set('Cache-Control', 'public, max-age=900');
     res.set('X-SDO-Cache', 'hit');
+    res.set('X-SDO-Source', cached.source || 'unknown');
     return res.send(cached.buffer);
   }
 
-  // Negative cache — don't hammer NASA if it just failed
-  // Shorter backoff (15s) when no stale image exists (cold start), 60s otherwise
+  // Negative cache — don't hammer sources if they just failed
   const negTs = SDO_NEGATIVE_CACHE.get(type) || 0;
   const backoff = cached?.buffer ? 60_000 : 15_000;
   if (now - negTs < backoff) {
@@ -2092,40 +2130,40 @@ app.get('/api/solar/image/:type', async (req, res) => {
     return res.status(503).json({ error: 'SDO temporarily unavailable' });
   }
 
-  // Try twice — NASA SDO is unreliable
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const { buffer, contentType } = await fetchSDOImage(type, attempt === 1 ? 20000 : 15000);
+  // Try sources in order: SDO direct → Helioviewer
+  const sources = [
+    { name: 'SDO', fn: () => fetchFromSDO(type) },
+    { name: 'Helioviewer', fn: () => fetchFromHelioviewer(type) },
+  ];
 
-      sdoImageCache.set(type, { buffer, contentType, timestamp: now });
+  for (const src of sources) {
+    try {
+      const { buffer, contentType, source } = await src.fn();
+      sdoImageCache.set(type, { buffer, contentType, timestamp: now, source });
       SDO_NEGATIVE_CACHE.delete(type);
 
-      console.log(`[Solar] SDO image fetched: ${type} (${buffer.length} bytes, attempt ${attempt})`);
+      console.log(`[Solar] Image fetched: ${type} (${buffer.length} bytes from ${source})`);
       res.set('Content-Type', contentType);
       res.set('Cache-Control', 'public, max-age=900');
       res.set('X-SDO-Cache', 'miss');
+      res.set('X-SDO-Source', source);
       return res.send(buffer);
     } catch (e) {
       const reason = e.name === 'AbortError' ? 'timeout' : e.message;
-      console.error(`[Solar] SDO fetch failed (${type}, attempt ${attempt}/2): ${reason}`);
-      if (attempt < 2) {
-        // Brief pause before retry
-        await new Promise((r) => setTimeout(r, 2000));
-      }
+      console.error(`[Solar] ${src.name} failed (${type}): ${reason}`);
     }
   }
 
-  // Both attempts failed
+  // All sources failed
   SDO_NEGATIVE_CACHE.set(type, now);
 
-  // Serve stale on error
   if (cached?.buffer && now - cached.timestamp < SDO_STALE_SERVE) {
     res.set('Content-Type', cached.contentType || 'image/jpeg');
     res.set('Cache-Control', 'public, max-age=60');
     res.set('X-SDO-Cache', 'stale-error');
     return res.send(cached.buffer);
   }
-  return res.status(502).json({ error: 'Failed to fetch SDO image' });
+  return res.status(502).json({ error: 'All solar image sources failed' });
 });
 
 // NASA Dial-A-Moon — proxies photorealistic moon image from NASA SVS
