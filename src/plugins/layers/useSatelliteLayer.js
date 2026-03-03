@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as satellite from 'satellite.js';
+import { addMinimizeToggle } from './addMinimizeToggle.js';
 import { replicatePoint, replicatePath } from '../../utils/geo.js';
 
 export const metadata = {
@@ -18,7 +19,7 @@ export const metadata = {
   },
 };
 
-export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, config, units }) => {
+export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, config, allUnits }) => {
   const layerGroupRef = useRef(null);
 
   // 1. Multi-select state (Wipes on browser close)
@@ -140,14 +141,18 @@ export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, con
 
       let isDragging = false;
 
+      // This panel predates the shared Leaflet control widgets and is positioned
+      // relative to the map container using top/right, so it keeps its own drag
+      // logic instead of makeDraggable()'s fixed-position viewport model.
       win.onmousedown = (e) => {
-        if (e.ctrlKey) {
-          isDragging = true;
-          win.style.cursor = 'move';
-          if (map.dragging) map.dragging.disable();
-          e.preventDefault();
-          e.stopPropagation();
-        }
+        if (e.button !== 0) return;
+        if (!e.target.closest('.sat-data-window-title')) return;
+        if (e.target.closest('button')) return;
+        isDragging = true;
+        win.style.cursor = 'move';
+        if (map.dragging) map.dragging.disable();
+        e.preventDefault();
+        e.stopPropagation();
       };
 
       window.onmousemove = (e) => {
@@ -181,16 +186,18 @@ export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, con
     window.__satWinToggleMinimize = () => setWinMinimized((prev) => !prev);
 
     const titleBar = `
-      <div style="display:flex; justify-content:space-between; align-items:center;
+      <div class="sat-data-window-title" style="display:flex; justify-content:space-between; align-items:center;
+                  cursor:grab; user-select:none;
                   padding: 8px 10px; border-bottom: 1px solid #004444; background: rgba(0,40,40,0.6);">
-        <span style="font-size:11px; color:#00ffff; letter-spacing:0.05em;">
+        <span data-drag-handle="true" style="font-family: 'JetBrains Mono', monospace; font-size:13px; font-weight:700; color:#00b4ff; letter-spacing:0.05em;">
           🛰 ${activeSats.length} SAT${activeSats.length !== 1 ? 'S' : ''}
         </span>
-        <button onclick="window.__satWinToggleMinimize()"
+        <button class="sat-data-window-minimize"
+                onclick="window.__satWinToggleMinimize()"
                 title="${winMinimized ? 'Expand' : 'Minimize'}"
-                style="background:none; border:1px solid #004444; color:#00cccc; cursor:pointer;
-                       font-size:13px; line-height:1; padding:1px 6px; border-radius:3px;">
-          ${winMinimized ? '▲' : '▼'}
+                style="background:none; border:none; color:#888; cursor:pointer;
+                       font-size:10px; line-height:1; padding:2px 4px; margin:0;">
+          ${winMinimized ? '▶' : '▼'}
         </button>
       </div>
     `;
@@ -198,7 +205,15 @@ export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, con
     if (winMinimized) {
       win.style.maxHeight = '';
       win.style.overflowY = 'hidden';
-      win.innerHTML = titleBar;
+      win.innerHTML = `${titleBar}<div class="sat-data-window-content"></div>`;
+      addMinimizeToggle(win, 'sat-data-window', {
+        contentClassName: 'sat-data-window-content',
+        buttonClassName: 'sat-data-window-minimize',
+        getIsMinimized: () => winMinimized,
+        onToggle: setWinMinimized,
+        persist: false,
+        manageButtonEvents: false,
+      });
       return;
     }
 
@@ -212,20 +227,21 @@ export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, con
                        padding: 4px 10px; font-size: 10px; border-radius: 3px; font-weight: bold; width: 100%;">
           CLEAR ALL FOOTPRINTS
         </button>
-        <span style="font-size: 9px; color: #888;">Ctrl + Drag to move</span>
+        <span style="font-size: 9px; color: #888;">Drag title to move</span>
       </div>
     `;
 
     win.innerHTML =
       titleBar +
+      `<div class="sat-data-window-content">` +
       clearAllBtn +
       `<div style="padding: 0 12px 8px;">` +
       activeSats
         .map((sat) => {
           const isVisible = sat.visible === true;
-          const isImp = units === 'imperial';
-          const conv = isImp ? 0.621371 : 1;
-          const distUnit = isImp ? ' mi' : ' km';
+          const isImpDist = allUnits.dist === 'imperial';
+          const conv = isImpDist ? 0.621371 : 1;
+          const distUnit = isImpDist ? ' mi' : ' km';
 
           return `
         <div class="sat-card" style="border-bottom: 1px solid #004444; margin-bottom: 10px; padding-bottom: 8px;">
@@ -248,7 +264,16 @@ export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, con
       `;
         })
         .join('') +
-      `</div>`;
+      `</div></div>`;
+
+    addMinimizeToggle(win, 'sat-data-window', {
+      contentClassName: 'sat-data-window-content',
+      buttonClassName: 'sat-data-window-minimize',
+      getIsMinimized: () => winMinimized,
+      onToggle: setWinMinimized,
+      persist: false,
+      manageButtonEvents: false,
+    });
   };
 
   const renderSatellites = () => {
@@ -370,7 +395,7 @@ export const useLayer = ({ map, enabled, satellites, setSatellites, opacity, con
 
   useEffect(() => {
     if (enabled) renderSatellites();
-  }, [satellites, selectedSats, units, opacity, config, winMinimized]);
+  }, [satellites, selectedSats, allUnits, opacity, config, winMinimized]);
 
   return null;
 };

@@ -320,6 +320,11 @@ const CONFIG = {
 
   // Display preferences
   units: process.env.UNITS || jsonConfig.units || 'imperial',
+  allUnits: {
+    dist: process.env.DISTUNITS || jsonConfig.allUnits?.dist || 'imperial',
+    temp: process.env.TEMPUNITS || jsonConfig.allUnits?.temp || 'imperial',
+    press: process.env.PRESSUNITS || jsonConfig.allUnits?.press || 'imperial',
+  },
   timeFormat: process.env.TIME_FORMAT || jsonConfig.timeFormat || '12',
   theme: process.env.THEME || jsonConfig.theme || 'dark',
   layout: process.env.LAYOUT || jsonConfig.layout || 'modern',
@@ -1630,12 +1635,7 @@ if (fs.existsSync(path.join(__dirname, '.git'))) {
     // Mark directory as safe for git — fixes "dubious ownership" errors when
     // the server runs as a different user than the repo owner (e.g. systemd
     // running as root, repo owned by 'pi')
-    execFile(
-      'git',
-      ['config', '--global', '--add', 'safe.directory', __dirname],
-      { cwd: __dirname },
-      () => {},
-    );
+    execFile('git', ['config', '--global', '--add', 'safe.directory', __dirname], { cwd: __dirname }, () => {});
   } catch {}
 }
 
@@ -2031,6 +2031,139 @@ app.get('/api/solar-indices', async (req, res) => {
     if (noaaCache.solarIndices.data) return res.json(noaaCache.solarIndices.data);
     res.status(500).json({ error: 'Failed to fetch solar indices' });
   }
+});
+
+// NASA SDO Solar Image Proxy — caches SDO/AIA images so clients don't hit NASA directly.
+// Multi-source: tries SDO direct first (works for self-hosters), then Helioviewer API (works from cloud).
+const sdoImageCache = new Map(); // key: imageType → { buffer, contentType, timestamp }
+const SDO_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const SDO_STALE_SERVE = 6 * 60 * 60 * 1000; // Serve stale up to 6 hours
+const SDO_VALID_TYPES = new Set(['0193', '0304', '0171', '0094', 'HMIIC']);
+const SDO_NEGATIVE_CACHE = new Map(); // Prevent retry storm per type
+
+// Helper: fetch from NASA SDO direct
+const fetchFromSDO = async (type, timeoutMs = 15000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`https://sdo.gsfc.nasa.gov/assets/img/latest/latest_256_${type}.jpg`, {
+      headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return { buffer, contentType: res.headers.get('content-type') || 'image/jpeg', source: 'SDO' };
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+};
+
+// Helper: fetch from Helioviewer takeScreenshot API (official NASA-funded SDO mirror)
+// Helioviewer layers format: [Observatory,Instrument,Detector,Measurement,visible,opacity]
+const HELIO_LAYERS = {
+  '0193': '[SDO,AIA,AIA,193,1,100]',
+  '0304': '[SDO,AIA,AIA,304,1,100]',
+  '0171': '[SDO,AIA,AIA,171,1,100]',
+  '0094': '[SDO,AIA,AIA,94,1,100]',
+  'HMIIC': '[SDO,HMI,HMI,continuum,1,100]',
+};
+
+const fetchFromHelioviewer = async (type, timeoutMs = 20000) => {
+  const layers = HELIO_LAYERS[type];
+  if (!layers) throw new Error(`No Helioviewer layer config for ${type}`);
+  const now = new Date().toISOString().replace(/\.\d+Z/, 'Z');
+  // imageScale 9.6 arcsec/px: full solar disk ~200px in 256px frame, matching SDO latest_256 framing
+  const url =
+    `https://api.helioviewer.org/v2/takeScreenshot/?` +
+    `date=${now}&imageScale=9.6` +
+    `&layers=${encodeURIComponent(layers)}` +
+    `&events=&eventLabels=false&display=true&watermark=false` +
+    `&width=256&height=256&x0=0&y0=0`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length < 500) throw new Error(`Response too small (${buffer.length} bytes)`);
+    return { buffer, contentType: res.headers.get('content-type') || 'image/png', source: 'Helioviewer' };
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+};
+
+app.get('/api/solar/image/:type', async (req, res) => {
+  const type = req.params.type;
+  if (!SDO_VALID_TYPES.has(type)) {
+    return res.status(400).json({ error: 'Invalid image type' });
+  }
+
+  const cached = sdoImageCache.get(type);
+  const now = Date.now();
+
+  // Serve fresh cache
+  if (cached?.buffer && now - cached.timestamp < SDO_CACHE_TTL) {
+    res.set('Content-Type', cached.contentType || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=900');
+    res.set('X-SDO-Cache', 'hit');
+    res.set('X-SDO-Source', cached.source || 'unknown');
+    return res.send(cached.buffer);
+  }
+
+  // Negative cache — don't hammer sources if they just failed
+  const negTs = SDO_NEGATIVE_CACHE.get(type) || 0;
+  const backoff = cached?.buffer ? 60_000 : 15_000;
+  if (now - negTs < backoff) {
+    if (cached?.buffer && now - cached.timestamp < SDO_STALE_SERVE) {
+      res.set('Content-Type', cached.contentType || 'image/jpeg');
+      res.set('Cache-Control', 'public, max-age=60');
+      res.set('X-SDO-Cache', 'stale-backoff');
+      return res.send(cached.buffer);
+    }
+    return res.status(503).json({ error: 'SDO temporarily unavailable' });
+  }
+
+  // Try sources in order: SDO direct → Helioviewer
+  const sources = [
+    { name: 'SDO', fn: () => fetchFromSDO(type) },
+    { name: 'Helioviewer', fn: () => fetchFromHelioviewer(type) },
+  ];
+
+  for (const src of sources) {
+    try {
+      const { buffer, contentType, source } = await src.fn();
+      sdoImageCache.set(type, { buffer, contentType, timestamp: now, source });
+      SDO_NEGATIVE_CACHE.delete(type);
+
+      console.log(`[Solar] Image fetched: ${type} (${buffer.length} bytes from ${source})`);
+      res.set('Content-Type', contentType);
+      res.set('Cache-Control', 'public, max-age=900');
+      res.set('X-SDO-Cache', 'miss');
+      res.set('X-SDO-Source', source);
+      return res.send(buffer);
+    } catch (e) {
+      const reason = e.name === 'AbortError' ? 'timeout' : e.message;
+      console.error(`[Solar] ${src.name} failed (${type}): ${reason}`);
+    }
+  }
+
+  // All sources failed
+  SDO_NEGATIVE_CACHE.set(type, now);
+
+  if (cached?.buffer && now - cached.timestamp < SDO_STALE_SERVE) {
+    res.set('Content-Type', cached.contentType || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=60');
+    res.set('X-SDO-Cache', 'stale-error');
+    return res.send(cached.buffer);
+  }
+  return res.status(502).json({ error: 'All solar image sources failed' });
 });
 
 // NASA Dial-A-Moon — proxies photorealistic moon image from NASA SVS
@@ -6099,12 +6232,19 @@ function pskMqttConnect() {
 
     const count = pskMqtt.subscribedCalls.size;
     if (count > 0) {
-      console.log(`[PSK-MQTT] Connected — subscribing ${count} callsigns`);
+      console.log(`[PSK-MQTT] Connected — subscribing ${count} keys`);
       // Batch all topic subscriptions into a single subscribe call
       const topics = [];
-      for (const call of pskMqtt.subscribedCalls) {
-        topics.push(`pskr/filter/v2/+/+/${call}/#`);
-        topics.push(`pskr/filter/v2/+/+/+/${call}/#`);
+      for (const key of pskMqtt.subscribedCalls) {
+        if (key.startsWith('grid:')) {
+          const grid = key.slice(5);
+          topics.push(`pskr/filter/v2/+/+/+/+/${grid}/#`);
+          topics.push(`pskr/filter/v2/+/+/+/+/+/${grid}/#`);
+        } else {
+          const call = key.startsWith('call:') ? key.slice(5) : key;
+          topics.push(`pskr/filter/v2/+/+/${call}/#`);
+          topics.push(`pskr/filter/v2/+/+/+/${call}/#`);
+        }
       }
       pskMqtt.client.subscribe(topics, { qos: 0 }, (err) => {
         if (err) {
@@ -6113,11 +6253,11 @@ function pskMqttConnect() {
           if (err.message && err.message.includes('onnection closed')) return;
           console.error(`[PSK-MQTT] Batch subscribe error:`, err.message);
         } else {
-          console.log(`[PSK-MQTT] Subscribed ${count} callsigns (${topics.length} topics)`);
+          console.log(`[PSK-MQTT] Subscribed ${count} keys (${topics.length} topics)`);
         }
       });
     } else {
-      console.log('[PSK-MQTT] Connected (no active callsigns)');
+      console.log('[PSK-MQTT] Connected (no active subscriptions)');
     }
   });
 
@@ -6150,64 +6290,61 @@ function pskMqttConnect() {
       pskMqtt.stats.spotsReceived++;
       pskMqtt.stats.lastSpotTime = now;
 
-      // Buffer for TX subscribers (sc is the callsign being tracked)
-      const scUpper = sc.toUpperCase();
-      if (pskMqtt.subscribers.has(scUpper)) {
-        const txSpot = {
-          ...spot,
-          lat: receiverLoc?.lat,
-          lon: receiverLoc?.lon,
-          direction: 'tx',
-        };
-        // Dedup: skip if same sender+receiver+band+freq already in buffer or recent
+      // Helper: buffer a spot for a subscriber key, with dedup and cap
+      const bufferSpot = (subKey, enrichedSpot) => {
         const spotKey = `${sc}|${rc}|${spot.band}|${freq}`;
-        if (!pskMqtt.spotBuffer.has(scUpper)) pskMqtt.spotBuffer.set(scUpper, []);
-        const scBuf = pskMqtt.spotBuffer.get(scUpper);
-        const isDupBuf = scBuf.some((s) => `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === spotKey);
-        if (!isDupBuf) {
-          scBuf.push(txSpot);
+        // Grid subscriptions are noisier — use a higher cap
+        const maxRecent = subKey.startsWith('grid:') ? 500 : 250;
+        const maxRecentTrim = subKey.startsWith('grid:') ? 400 : 200;
+
+        if (!pskMqtt.spotBuffer.has(subKey)) pskMqtt.spotBuffer.set(subKey, []);
+        const buf = pskMqtt.spotBuffer.get(subKey);
+        if (!buf.some((s) => `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === spotKey)) {
+          buf.push(enrichedSpot);
         }
-        // Also add to recent spots (capped at insert time to prevent unbounded growth)
-        if (!pskMqtt.recentSpots.has(scUpper)) pskMqtt.recentSpots.set(scUpper, []);
-        const scRecent = pskMqtt.recentSpots.get(scUpper);
-        const isDupRecent = scRecent.some(
+
+        if (!pskMqtt.recentSpots.has(subKey)) pskMqtt.recentSpots.set(subKey, []);
+        const recent = pskMqtt.recentSpots.get(subKey);
+        const isDup = recent.some(
           (s) =>
             `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === spotKey &&
             Math.abs(s.timestamp - spot.timestamp) < 30000,
         );
-        if (!isDupRecent) {
-          scRecent.push(txSpot);
-          if (scRecent.length > 250) pskMqtt.recentSpots.set(scUpper, scRecent.slice(-200));
+        if (!isDup) {
+          recent.push(enrichedSpot);
+          if (recent.length > maxRecent) pskMqtt.recentSpots.set(subKey, recent.slice(-maxRecentTrim));
+        }
+      };
+
+      // ── Callsign-based routing ──
+      // TX: sender callsign matches a subscriber
+      const scUpper = sc.toUpperCase();
+      if (pskMqtt.subscribers.has(scUpper)) {
+        bufferSpot(scUpper, { ...spot, lat: receiverLoc?.lat, lon: receiverLoc?.lon, direction: 'tx' });
+      }
+
+      // RX: receiver callsign matches a subscriber
+      const rcUpper = rc.toUpperCase();
+      if (pskMqtt.subscribers.has(rcUpper)) {
+        bufferSpot(rcUpper, { ...spot, lat: senderLoc?.lat, lon: senderLoc?.lon, direction: 'rx' });
+      }
+
+      // ── Grid-based routing ──
+      // TX: sender grid matches a grid subscriber (signal sent FROM this grid)
+      if (sl) {
+        const slUpper = sl.toUpperCase().substring(0, 4);
+        const gridTxKey = `grid:${slUpper}`;
+        if (pskMqtt.subscribers.has(gridTxKey)) {
+          bufferSpot(gridTxKey, { ...spot, lat: receiverLoc?.lat, lon: receiverLoc?.lon, direction: 'tx' });
         }
       }
 
-      // Buffer for RX subscribers (rc is the callsign being tracked)
-      const rcUpper = rc.toUpperCase();
-      if (pskMqtt.subscribers.has(rcUpper)) {
-        const rxSpot = {
-          ...spot,
-          lat: senderLoc?.lat,
-          lon: senderLoc?.lon,
-          direction: 'rx',
-        };
-        // Dedup: skip if same sender+receiver+band+freq already in buffer or recent
-        const rxSpotKey = `${sc}|${rc}|${spot.band}|${freq}`;
-        if (!pskMqtt.spotBuffer.has(rcUpper)) pskMqtt.spotBuffer.set(rcUpper, []);
-        const rcBuf = pskMqtt.spotBuffer.get(rcUpper);
-        const isDupRxBuf = rcBuf.some((s) => `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === rxSpotKey);
-        if (!isDupRxBuf) {
-          rcBuf.push(rxSpot);
-        }
-        if (!pskMqtt.recentSpots.has(rcUpper)) pskMqtt.recentSpots.set(rcUpper, []);
-        const rcRecent = pskMqtt.recentSpots.get(rcUpper);
-        const isDupRxRecent = rcRecent.some(
-          (s) =>
-            `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === rxSpotKey &&
-            Math.abs(s.timestamp - spot.timestamp) < 30000,
-        );
-        if (!isDupRxRecent) {
-          rcRecent.push(rxSpot);
-          if (rcRecent.length > 250) pskMqtt.recentSpots.set(rcUpper, rcRecent.slice(-200));
+      // RX: receiver grid matches a grid subscriber (signal received AT this grid)
+      if (rl) {
+        const rlUpper = rl.toUpperCase().substring(0, 4);
+        const gridRxKey = `grid:${rlUpper}`;
+        if (pskMqtt.subscribers.has(gridRxKey)) {
+          bufferSpot(gridRxKey, { ...spot, lat: senderLoc?.lat, lon: senderLoc?.lon, direction: 'rx' });
         }
       }
     } catch {
@@ -6289,6 +6426,58 @@ function unsubscribeCallsign(call) {
   });
 }
 
+// Grid-based MQTT subscriptions.
+// PSKReporter MQTT v2 topic hierarchy places the sender/receiver grid square
+// two levels after the sender/receiver callsign:
+//   pskr/filter/v2/{band}/{mode}/{senderCall}/{receiverCall}/{senderGrid}/{receiverGrid}
+// Subscribing with the grid in positions 7/8 returns ALL spots sent from or
+// received at that grid, regardless of callsign — ideal for pre-TX band assessment.
+//
+// NOTE: if PSKReporter changes its topic schema these patterns may need updating.
+// Verify against https://pskreporter.info/mqtt.html if spots stop arriving.
+function subscribeGrid(grid) {
+  if (!pskMqtt.client || !pskMqtt.connected) return;
+  const txTopic = `pskr/filter/v2/+/+/+/+/${grid}/#`; // senderGrid position (7)
+  const rxTopic = `pskr/filter/v2/+/+/+/+/+/${grid}/#`; // receiverGrid position (8)
+  pskMqtt.client.subscribe([txTopic, rxTopic], { qos: 0 }, (err) => {
+    if (err) {
+      if (err.message && err.message.includes('onnection closed')) return;
+      console.error(`[PSK-MQTT] Grid subscribe error for ${grid}:`, err.message);
+    } else {
+      console.log(`[PSK-MQTT] Subscribed grid ${grid}`);
+    }
+  });
+}
+
+function unsubscribeGrid(grid) {
+  if (!pskMqtt.client || !pskMqtt.connected) return;
+  const txTopic = `pskr/filter/v2/+/+/+/+/${grid}/#`;
+  const rxTopic = `pskr/filter/v2/+/+/+/+/+/${grid}/#`;
+  pskMqtt.client.unsubscribe([txTopic, rxTopic], (err) => {
+    if (err) {
+      if (err.message && err.message.includes('onnection closed')) return;
+      console.error(`[PSK-MQTT] Grid unsubscribe error for ${grid}:`, err.message);
+    }
+  });
+}
+
+// Subscribe or unsubscribe based on key type (call:XX or grid:XX)
+function subscribeKey(key) {
+  if (key.startsWith('grid:')) {
+    subscribeGrid(key.slice(5));
+  } else {
+    subscribeCallsign(key.startsWith('call:') ? key.slice(5) : key);
+  }
+}
+
+function unsubscribeKey(key) {
+  if (key.startsWith('grid:')) {
+    unsubscribeGrid(key.slice(5));
+  } else {
+    unsubscribeCallsign(key.startsWith('call:') ? key.slice(5) : key);
+  }
+}
+
 // Flush buffered spots to SSE clients every 15 seconds
 pskMqtt.flushInterval = setInterval(() => {
   for (const [call, clients] of pskMqtt.subscribers) {
@@ -6346,7 +6535,7 @@ pskMqtt.cleanupInterval = setInterval(
       if (clients.size === 0) {
         pskMqtt.subscribers.delete(call);
         pskMqtt.subscribedCalls.delete(call);
-        unsubscribeCallsign(call);
+        unsubscribeKey(call);
         console.log(`[PSK-MQTT] Cleaned up empty subscriber set for ${call}`);
       }
     }
@@ -6355,11 +6544,25 @@ pskMqtt.cleanupInterval = setInterval(
 );
 
 // SSE endpoint — clients connect here for real-time spots
-app.get('/api/pskreporter/stream/:callsign', (req, res) => {
-  const callsign = req.params.callsign.toUpperCase();
-  if (!callsign || callsign === 'N0CALL') {
-    return res.status(400).json({ error: 'Valid callsign required' });
+// ?type=grid subscribes by grid square instead of callsign
+app.get('/api/pskreporter/stream/:identifier', (req, res) => {
+  const identifier = req.params.identifier.toUpperCase();
+  const type = (req.query.type || 'call').toLowerCase();
+
+  if (type === 'grid') {
+    // Validate grid: 4 or 6 character Maidenhead locator
+    if (!/^[A-R]{2}[0-9]{2}([A-X]{2})?$/i.test(identifier)) {
+      return res.status(400).json({ error: 'Valid 4 or 6 character grid square required (e.g. FN20 or FN20ab)' });
+    }
+  } else {
+    if (!identifier || identifier === 'N0CALL') {
+      return res.status(400).json({ error: 'Valid callsign required' });
+    }
   }
+
+  // Subscriber key: "grid:FN20" for grid mode, or plain callsign for backward compat
+  const subKey = type === 'grid' ? `grid:${identifier.substring(0, 4)}` : identifier;
+  const maxRecentReturn = type === 'grid' ? 400 : 200;
 
   // Set up SSE — disable any buffering
   res.writeHead(200, {
@@ -6372,28 +6575,30 @@ app.get('/api/pskreporter/stream/:callsign', (req, res) => {
   res.flushHeaders();
 
   // Send initial connection event with any recent spots we already have
-  const recentSpots = pskMqtt.recentSpots.get(callsign) || [];
+  const recentSpots = pskMqtt.recentSpots.get(subKey) || [];
   res.write(
     `event: connected\ndata: ${JSON.stringify({
-      callsign,
+      callsign: identifier,
+      type,
+      subKey,
       mqttConnected: pskMqtt.connected,
-      recentSpots: recentSpots.slice(-200),
-      subscriberCount: (pskMqtt.subscribers.get(callsign)?.size || 0) + 1,
+      recentSpots: recentSpots.slice(-maxRecentReturn),
+      subscriberCount: (pskMqtt.subscribers.get(subKey)?.size || 0) + 1,
     })}\n\n`,
   );
   if (typeof res.flush === 'function') res.flush();
 
   // Register this client
-  if (!pskMqtt.subscribers.has(callsign)) {
-    pskMqtt.subscribers.set(callsign, new Set());
+  if (!pskMqtt.subscribers.has(subKey)) {
+    pskMqtt.subscribers.set(subKey, new Set());
   }
-  pskMqtt.subscribers.get(callsign).add(res);
+  pskMqtt.subscribers.get(subKey).add(res);
 
-  // Subscribe on MQTT if this is a new callsign
-  if (!pskMqtt.subscribedCalls.has(callsign)) {
-    pskMqtt.subscribedCalls.add(callsign);
+  // Subscribe on MQTT if this is a new key
+  if (!pskMqtt.subscribedCalls.has(subKey)) {
+    pskMqtt.subscribedCalls.add(subKey);
     if (pskMqtt.connected) {
-      subscribeCallsign(callsign);
+      subscribeKey(subKey);
     }
     // Start MQTT connection if not already connected
     if (!pskMqtt.client || (!pskMqtt.connected && pskMqtt.reconnectAttempts === 0)) {
@@ -6402,7 +6607,7 @@ app.get('/api/pskreporter/stream/:callsign', (req, res) => {
   }
 
   logInfo(
-    `[PSK-MQTT] SSE client connected for ${callsign} (${pskMqtt.subscribers.get(callsign).size} clients, ${pskMqtt.subscribedCalls.size} callsigns total)`,
+    `[PSK-MQTT] SSE client connected for ${subKey} (${pskMqtt.subscribers.get(subKey).size} clients, ${pskMqtt.subscribedCalls.size} keys total)`,
   );
 
   // Keepalive ping every 30 seconds
@@ -6418,23 +6623,23 @@ app.get('/api/pskreporter/stream/:callsign', (req, res) => {
   // Cleanup on disconnect
   req.on('close', () => {
     clearInterval(keepalive);
-    const clients = pskMqtt.subscribers.get(callsign);
+    const clients = pskMqtt.subscribers.get(subKey);
     if (clients) {
       clients.delete(res);
-      logInfo(`[PSK-MQTT] SSE client disconnected for ${callsign} (${clients.size} remaining)`);
+      logInfo(`[PSK-MQTT] SSE client disconnected for ${subKey} (${clients.size} remaining)`);
 
-      // If no more clients for this callsign, unsubscribe after a grace period
+      // If no more clients for this key, unsubscribe after a grace period
       if (clients.size === 0) {
         setTimeout(() => {
-          const stillEmpty = pskMqtt.subscribers.get(callsign);
+          const stillEmpty = pskMqtt.subscribers.get(subKey);
           if (stillEmpty && stillEmpty.size === 0) {
-            pskMqtt.subscribers.delete(callsign);
-            pskMqtt.subscribedCalls.delete(callsign);
-            // Clean up spot data for this callsign
-            pskMqtt.recentSpots.delete(callsign);
-            pskMqtt.spotBuffer.delete(callsign);
-            unsubscribeCallsign(callsign);
-            console.log(`[PSK-MQTT] Unsubscribed ${callsign} (no more clients after grace period)`);
+            pskMqtt.subscribers.delete(subKey);
+            pskMqtt.subscribedCalls.delete(subKey);
+            // Clean up spot data
+            pskMqtt.recentSpots.delete(subKey);
+            pskMqtt.spotBuffer.delete(subKey);
+            unsubscribeKey(subKey);
+            console.log(`[PSK-MQTT] Unsubscribed ${subKey} (no more clients after grace period)`);
 
             // If no subscribers at all, disconnect MQTT entirely
             if (pskMqtt.subscribedCalls.size === 0 && pskMqtt.client) {
@@ -7243,10 +7448,30 @@ app.get('/api/wspr/heatmap', async (req, res) => {
 // SATELLITE TRACKING API
 // ============================================
 
-// Comprehensive ham radio satellites - NORAD IDs
-// Updated list of active amateur radio satellites and selected weather satellites
+// Curated list of active ham radio and amateur-accessible satellites
+// Last audited: March 2026
+//
+// REMOVED (dead/decayed/not ham):
+//   AO-92 (43137) — re-entered Feb 2024
+//   PO-101 (43678) — decommissioned, EOL Dec 2025
+//   AO-27 (22825) — dead since ~2020
+//   RS-15 (23439) — dead for years
+//   FO-99 (43937) — dead/marginal
+//   UVSQ-SAT (47438) — science payload, not ham
+//   MeznSat (46489) — science payload, not ham
+//   CAS-5A (54684) — decayed from orbit
+//   ARISS/SSTV-ISS — duplicate NORAD 25544, consolidated into ISS entry
+//
+// ADDED:
+//   AO-123 (ASRTU-1) — FM transponder, active since Aug 2025
+//   SO-124 (HADES-R) — FM repeater, active since Feb 2025
+//   SO-125 (HADES-ICM) — FM repeater, active since Jun 2025
+//   QMR-KWT-2 — FM repeater/SSTV, launched Dec 2025, NORAD 67291
+//
+// FIXED: TEVEL NORAD IDs corrected per AMSAT TLE bulletin
+//
 const HAM_SATELLITES = {
-  // High Priority - Popular FM satellites
+  // ── High Priority — Popular FM Satellites ──────────────────────
   ISS: {
     norad: 25544,
     name: 'ISS (ZARYA)',
@@ -7265,25 +7490,39 @@ const HAM_SATELLITES = {
     norad: 43017,
     name: 'AO-91 (Fox-1B)',
     color: '#ff6600',
-    priority: 1,
-    mode: 'FM',
+    priority: 2,
+    mode: 'FM (sunlight only)',
   },
-  'AO-92': {
-    norad: 43137,
-    name: 'AO-92 (Fox-1D)',
-    color: '#ff9900',
-    priority: 1,
-    mode: 'FM/L-band',
-  },
-  'PO-101': {
-    norad: 43678,
-    name: 'PO-101 (Diwata-2)',
+  'AO-123': {
+    norad: 61781,
+    name: 'AO-123 (ASRTU-1)',
     color: '#ff3399',
     priority: 1,
     mode: 'FM',
   },
+  'SO-124': {
+    norad: 62690,
+    name: 'SO-124 (HADES-R)',
+    color: '#ff44aa',
+    priority: 1,
+    mode: 'FM',
+  },
+  'SO-125': {
+    norad: 63492,
+    name: 'SO-125 (HADES-ICM)',
+    color: '#ff55bb',
+    priority: 1,
+    mode: 'FM',
+  },
+  'QMR-KWT-2': {
+    norad: 67291,
+    name: 'QMR-KWT-2',
+    color: '#ff88dd',
+    priority: 1,
+    mode: 'FM/SSTV',
+  },
 
-  // Weather Satellites - GOES & METEOR
+  // ── Weather Satellites — GOES & METEOR ─────────────────────────
   'GOES-18': {
     norad: 51850,
     name: 'GOES-18',
@@ -7312,35 +7551,21 @@ const HAM_SATELLITES = {
     priority: 1,
     mode: 'HRPT/LRPT',
   },
-  'SUOMI-NPP': {
-    norad: 37849,
-    name: 'SUOMI NPP',
-    color: '#0000FF',
-    priority: 2,
-    mode: 'HRD/SMD',
-  },
-  'NOAA-20': {
-    norad: 43013,
-    name: 'NOAA-20 (JPSS-1)',
-    color: '#0000FF',
-    priority: 2,
-    mode: 'HRD/SMD',
-  },
-  'NOAA-21': {
-    norad: 54234,
-    name: 'NOAA-21 (JPSS-2)',
-    color: '#0000FF',
-    priority: 2,
-    mode: 'HRD/SMD',
-  },
 
-  // Linear Transponder Satellites
+  // ── Linear Transponder Satellites ──────────────────────────────
   'RS-44': {
     norad: 44909,
     name: 'RS-44 (DOSAAF)',
     color: '#ff0066',
     priority: 1,
     mode: 'Linear',
+  },
+  'QO-100': {
+    norad: 43700,
+    name: "QO-100 (Es'hail-2)",
+    color: '#ffff00',
+    priority: 1,
+    mode: 'Linear (GEO)',
   },
   'AO-7': {
     norad: 7530,
@@ -7354,14 +7579,7 @@ const HAM_SATELLITES = {
     name: 'FO-29 (JAS-2)',
     color: '#ff6699',
     priority: 2,
-    mode: 'Linear',
-  },
-  'FO-99': {
-    norad: 43937,
-    name: 'FO-99 (NEXUS)',
-    color: '#ff99cc',
-    priority: 2,
-    mode: 'Linear',
+    mode: 'Linear (scheduled)',
   },
   'JO-97': {
     norad: 43803,
@@ -7370,50 +7588,22 @@ const HAM_SATELLITES = {
     priority: 2,
     mode: 'Linear/FM',
   },
-  'XW-2A': {
-    norad: 40903,
-    name: 'XW-2A (CAS-3A)',
-    color: '#66ff99',
+  'AO-73': {
+    norad: 39444,
+    name: 'AO-73 (FUNcube-1)',
+    color: '#ffcc66',
     priority: 2,
-    mode: 'Linear',
+    mode: 'Linear/Telemetry',
   },
-  'XW-2B': {
-    norad: 40911,
-    name: 'XW-2B (CAS-3B)',
-    color: '#66ffcc',
-    priority: 2,
-    mode: 'Linear',
-  },
-  'XW-2C': {
-    norad: 40906,
-    name: 'XW-2C (CAS-3C)',
-    color: '#99ffcc',
-    priority: 2,
-    mode: 'Linear',
-  },
-  'XW-2D': {
-    norad: 40907,
-    name: 'XW-2D (CAS-3D)',
-    color: '#99ff99',
-    priority: 2,
-    mode: 'Linear',
-  },
-  'XW-2E': {
-    norad: 40909,
-    name: 'XW-2E (CAS-3E)',
-    color: '#ccff99',
-    priority: 2,
-    mode: 'Linear',
-  },
-  'XW-2F': {
-    norad: 40910,
-    name: 'XW-2F (CAS-3F)',
-    color: '#ccffcc',
-    priority: 2,
-    mode: 'Linear',
+  'EO-88': {
+    norad: 42017,
+    name: 'EO-88 (Nayif-1)',
+    color: '#ffaa66',
+    priority: 3,
+    mode: 'Linear/Telemetry',
   },
 
-  // CAS (Chinese Amateur Satellites)
+  // ── CAS (Chinese Amateur Satellites) ───────────────────────────
   'CAS-4A': {
     norad: 42761,
     name: 'CAS-4A',
@@ -7436,7 +7626,37 @@ const HAM_SATELLITES = {
     mode: 'Linear',
   },
 
-  // GreenCube / IO satellites
+  // ── XW-2 Constellation (CAS-3) — intermittent ─────────────────
+  'XW-2A': {
+    norad: 40903,
+    name: 'XW-2A (CAS-3A)',
+    color: '#66ff99',
+    priority: 3,
+    mode: 'Linear',
+  },
+  'XW-2B': {
+    norad: 40911,
+    name: 'XW-2B (CAS-3B)',
+    color: '#66ffcc',
+    priority: 3,
+    mode: 'Linear',
+  },
+  'XW-2C': {
+    norad: 40906,
+    name: 'XW-2C (CAS-3C)',
+    color: '#99ffcc',
+    priority: 3,
+    mode: 'Linear',
+  },
+  'XW-2F': {
+    norad: 40910,
+    name: 'XW-2F (CAS-3F)',
+    color: '#ccffcc',
+    priority: 3,
+    mode: 'Linear',
+  },
+
+  // ── Digipeaters ────────────────────────────────────────────────
   'IO-117': {
     norad: 53106,
     name: 'IO-117 (GreenCube)',
@@ -7445,137 +7665,63 @@ const HAM_SATELLITES = {
     mode: 'Digipeater',
   },
 
-  // TEVEL constellation
+  // ── TEVEL Constellation — activated periodically ───────────────
+  // NORAD IDs corrected per AMSAT TLE bulletin Dec 2022
   'TEVEL-1': {
-    norad: 50988,
+    norad: 51013,
     name: 'TEVEL-1',
     color: '#66ccff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-2': {
-    norad: 50989,
+    norad: 51069,
     name: 'TEVEL-2',
     color: '#66ddff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-3': {
-    norad: 50994,
+    norad: 50988,
     name: 'TEVEL-3',
     color: '#66eeff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-4': {
-    norad: 50998,
+    norad: 51063,
     name: 'TEVEL-4',
     color: '#77ccff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-5': {
-    norad: 51062,
+    norad: 50998,
     name: 'TEVEL-5',
     color: '#77ddff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-6': {
-    norad: 51063,
+    norad: 50999,
     name: 'TEVEL-6',
     color: '#77eeff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-7': {
-    norad: 51069,
+    norad: 51062,
     name: 'TEVEL-7',
     color: '#88ccff',
     priority: 3,
     mode: 'FM',
   },
   'TEVEL-8': {
-    norad: 51084,
+    norad: 50989,
     name: 'TEVEL-8',
     color: '#88ddff',
     priority: 3,
     mode: 'FM',
-  },
-
-  // OSCAR satellites
-  'AO-27': {
-    norad: 22825,
-    name: 'AO-27',
-    color: '#ff9966',
-    priority: 3,
-    mode: 'FM',
-  },
-  'AO-73': {
-    norad: 39444,
-    name: 'AO-73 (FUNcube-1)',
-    color: '#ffcc66',
-    priority: 3,
-    mode: 'Linear/Telemetry',
-  },
-  'EO-88': {
-    norad: 42017,
-    name: 'EO-88 (Nayif-1)',
-    color: '#ffaa66',
-    priority: 3,
-    mode: 'Linear/Telemetry',
-  },
-
-  // Russian satellites
-  'RS-15': {
-    norad: 23439,
-    name: 'RS-15',
-    color: '#ff6666',
-    priority: 3,
-    mode: 'Linear',
-  },
-
-  // QO-100 (Geostationary - special)
-  'QO-100': {
-    norad: 43700,
-    name: "QO-100 (Es'hail-2)",
-    color: '#ffff00',
-    priority: 1,
-    mode: 'Linear (GEO)',
-  },
-
-  // APRS Digipeaters
-  ARISS: {
-    norad: 25544,
-    name: 'ARISS (ISS)',
-    color: '#00ffff',
-    priority: 1,
-    mode: 'APRS',
-  },
-
-  // Cubesats with amateur payloads
-  'UVSQ-SAT': {
-    norad: 47438,
-    name: 'UVSQ-SAT',
-    color: '#ff66ff',
-    priority: 4,
-    mode: 'Telemetry',
-  },
-  MEZNSAT: {
-    norad: 46489,
-    name: 'MeznSat',
-    color: '#66ff66',
-    priority: 4,
-    mode: 'Telemetry',
-  },
-
-  // SSTV/Slow Scan
-  'SSTV-ISS': {
-    norad: 25544,
-    name: 'ISS SSTV',
-    color: '#00ffff',
-    priority: 2,
-    mode: 'SSTV',
   },
 };
 
@@ -7654,6 +7800,9 @@ const TLE_SOURCE_ORDER = (process.env.TLE_SOURCES || 'celestrak,celestrak_legacy
   .filter((s) => TLE_SOURCES[s]);
 
 function parseTleText(text, tleData, group) {
+  // Build NORAD lookup set for fast matching
+  const knownNorads = new Set(Object.values(HAM_SATELLITES).map((s) => s.norad));
+
   const lines = text.trim().split('\n');
   for (let i = 0; i < lines.length - 2; i += 3) {
     const name = lines[i]?.trim();
@@ -7661,22 +7810,17 @@ function parseTleText(text, tleData, group) {
     const line2 = lines[i + 2]?.trim();
     if (name && line1 && line1.startsWith('1 ')) {
       const noradId = parseInt(line1.substring(2, 7));
+
+      // Only include satellites we've curated in HAM_SATELLITES
+      if (!knownNorads.has(noradId)) continue;
+
       const alreadyExists = Object.values(tleData).some((sat) => sat.norad === noradId);
       if (alreadyExists) continue;
-      const key = name.replace(/[^A-Z0-9\-]/g, '_').toUpperCase();
+
       const hamSat = Object.values(HAM_SATELLITES).find((s) => s.norad === noradId);
       if (hamSat) {
+        const key = name.replace(/[^A-Z0-9\-]/g, '_').toUpperCase();
         tleData[key] = { ...hamSat, tle1: line1, tle2: line2 };
-      } else {
-        tleData[key] = {
-          norad: noradId,
-          name,
-          color: '#cccccc',
-          priority: group === 'amateur' ? 3 : 4,
-          mode: 'Unknown',
-          tle1: line1,
-          tle2: line2,
-        };
       }
     }
   }
@@ -7726,6 +7870,75 @@ app.get('/api/satellites/tle', async (req, res) => {
 
     clearTimeout(timeout);
 
+    // Fill missing satellites — CelesTrak group files don't include every ham sat.
+    // Fetch individual TLEs by NORAD catalog number for any HAM_SATELLITES not yet resolved.
+    // Tries CelesTrak CATNR first, then SatNOGS API as fallback.
+    const foundNorads = new Set(Object.values(tleData).map((s) => s.norad));
+    const missingSats = Object.entries(HAM_SATELLITES).filter(([, s]) => !foundNorads.has(s.norad));
+    if (missingSats.length > 0 && missingSats.length <= 30) {
+      logDebug(
+        `[Satellites] ${missingSats.length} sats missing from group files: ${missingSats.map(([k]) => k).join(', ')}`,
+      );
+      // Fetch in batches of 5 to avoid hammering upstream
+      for (let i = 0; i < missingSats.length; i += 5) {
+        const batch = missingSats.slice(i, i + 5);
+        const results = await Promise.allSettled(
+          batch.map(async ([key, sat]) => {
+            // Try CelesTrak individual CATNR lookup first
+            try {
+              const catRes = await fetch(`https://celestrak.org/NORAD/elements/gp.php?CATNR=${sat.norad}&FORMAT=tle`, {
+                headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (catRes.ok) {
+                const catText = await catRes.text();
+                const catLines = catText.trim().split('\n');
+                if (catLines.length >= 3 && catLines[1].trim().startsWith('1 ')) {
+                  const tleKey = key.replace(/[^A-Z0-9\-]/g, '_').toUpperCase();
+                  tleData[tleKey] = { ...sat, tle1: catLines[1].trim(), tle2: catLines[2].trim() };
+                  logDebug(`[Satellites] Filled ${key} (NORAD ${sat.norad}) from CelesTrak CATNR`);
+                  return key;
+                }
+                logDebug(
+                  `[Satellites] CelesTrak CATNR ${sat.norad} returned unexpected format: ${catLines.length} lines`,
+                );
+              }
+            } catch (e) {
+              logDebug(`[Satellites] CelesTrak CATNR ${sat.norad} failed: ${e.message}`);
+            }
+
+            // Fallback: SatNOGS TLE API
+            try {
+              const satnogsRes = await fetch(`https://db.satnogs.org/api/tle/?norad_cat_id=${sat.norad}&format=json`, {
+                headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (satnogsRes.ok) {
+                const satnogsData = await satnogsRes.json();
+                const entry = Array.isArray(satnogsData) ? satnogsData[0] : satnogsData;
+                if (entry?.tle1 && entry?.tle2) {
+                  const tleKey = key.replace(/[^A-Z0-9\-]/g, '_').toUpperCase();
+                  tleData[tleKey] = { ...sat, tle1: entry.tle1.trim(), tle2: entry.tle2.trim() };
+                  logDebug(`[Satellites] Filled ${key} (NORAD ${sat.norad}) from SatNOGS`);
+                  return key;
+                }
+              }
+            } catch (e) {
+              logDebug(`[Satellites] SatNOGS ${sat.norad} failed: ${e.message}`);
+            }
+
+            logDebug(`[Satellites] Could not resolve TLE for ${key} (NORAD ${sat.norad}) from any source`);
+            return null;
+          }),
+        );
+        const filled = results.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value);
+        if (filled.length > 0) logDebug(`[Satellites] Batch filled: ${filled.join(', ')}`);
+        // Small delay between batches to be polite
+        if (i + 5 < missingSats.length) await new Promise((r) => setTimeout(r, 300));
+      }
+      logDebug(`[Satellites] After fill: ${Object.keys(tleData).length} total satellites resolved`);
+    }
+
     // ISS fallback — try CelesTrak direct if ISS not found
     const issExists = Object.values(tleData).some((sat) => sat.norad === 25544);
     if (!issExists) {
@@ -7763,6 +7976,27 @@ app.get('/api/satellites/tle', async (req, res) => {
     // Return stale cache or empty if everything fails
     res.json(tleCache.data || {});
   }
+});
+
+// Satellite debug endpoint — shows which sats resolved and which are missing
+app.get('/api/satellites/debug', (req, res) => {
+  const cached = tleCache.data || {};
+  const resolvedNorads = new Set(Object.values(cached).map((s) => s.norad));
+  const all = Object.entries(HAM_SATELLITES).map(([key, sat]) => ({
+    key,
+    norad: sat.norad,
+    name: sat.name,
+    resolved: resolvedNorads.has(sat.norad),
+    tleKey: Object.keys(cached).find((k) => cached[k].norad === sat.norad) || null,
+  }));
+  res.json({
+    cacheAge: tleCache.timestamp ? `${Math.round((Date.now() - tleCache.timestamp) / 1000)}s ago` : 'empty',
+    totalInRegistry: Object.keys(HAM_SATELLITES).length,
+    totalResolved: Object.keys(cached).length,
+    totalMissing: all.filter((s) => !s.resolved).length,
+    missing: all.filter((s) => !s.resolved),
+    resolved: all.filter((s) => s.resolved),
+  });
 });
 
 // ============================================
@@ -10407,6 +10641,7 @@ app.get('/api/config', (req, res) => {
 
     // Display preferences
     units: CONFIG.units,
+    allUnits: CONFIG.allUnits,
     timeFormat: CONFIG.timeFormat,
     theme: CONFIG.theme,
     layout: CONFIG.layout,
@@ -11139,7 +11374,8 @@ function parseDecodeMessage(text) {
       // Cache grid — in exchange it typically belongs to the calling station (dxCall)
       const coords = gridToLatLon(result.grid);
       if (coords) {
-        wsjtxGridCache.set(result.dxCall.toUpperCase(), {
+        const call = (result.deCall == CONFIG.callsign ? result.dxCall : result.deCall).toUpperCase();
+        wsjtxGridCache.set(call, {
           grid: result.grid,
           lat: coords.latitude,
           lon: coords.longitude,
@@ -11196,22 +11432,93 @@ function handleWSJTXMessage(msg, state) {
     }
 
     case WSJTX_MSG.STATUS: {
+      const prev = state.clients[msg.id] || {};
+      const newBand = msg.dialFrequency ? freqToBand(msg.dialFrequency) : null;
+
+      // ── Resolve DX callsign to coordinates ──
+      // When the operator selects a callsign in WSJT-X (setting Std Msgs),
+      // dxCall and optionally dxGrid are sent in the STATUS message.
+      // We resolve to lat/lon so the client can set the DX target.
+      let dxLat = null;
+      let dxLon = null;
+      let dxGrid = msg.dxGrid || null;
+      const dxCall = (msg.dxCall || '').replace(/[<>]/g, '').trim();
+
+      if (dxCall) {
+        // 1. Try dxGrid from WSJT-X (if it knows the DX station's grid)
+        if (dxGrid) {
+          const coords = gridToLatLon(dxGrid);
+          if (coords) {
+            dxLat = coords.latitude;
+            dxLon = coords.longitude;
+          }
+        }
+        // 2. Try grid cache (from prior CQ/exchange messages with grids)
+        if (dxLat === null) {
+          const cached = wsjtxGridCache.get(dxCall.toUpperCase());
+          if (cached) {
+            dxLat = cached.lat;
+            dxLon = cached.lon;
+            dxGrid = dxGrid || cached.grid;
+          }
+        }
+        // 3. Try callsign lookup cache (HamQTH/QRZ)
+        if (dxLat === null) {
+          const baseCall = extractBaseCallsign(dxCall);
+          if (baseCall) {
+            const cached = callsignLookupCache.get(baseCall);
+            if (cached && Date.now() - cached.timestamp < CALLSIGN_CACHE_TTL && cached.data?.lat != null) {
+              dxLat = cached.data.lat;
+              dxLon = cached.data.lon;
+            }
+          }
+        }
+        // 4. Last resort: estimate from callsign prefix
+        if (dxLat === null) {
+          const prefixLoc = estimateLocationFromPrefix(dxCall);
+          if (prefixLoc) {
+            dxLat = prefixLoc.lat;
+            dxLon = prefixLoc.lon;
+            dxGrid = dxGrid || prefixLoc.grid;
+          }
+        }
+      }
+
+      // ── Detect band change ──
+      // When the operator changes bands in WSJT-X, old-band decodes are stale.
+      // Track the change so clients can clear their decode list.
+      const bandChanged = prev.band && newBand && prev.band !== newBand;
+
       state.clients[msg.id] = {
-        ...(state.clients[msg.id] || {}),
+        ...prev,
         lastSeen: msg.timestamp,
         dialFrequency: msg.dialFrequency,
         mode: msg.mode,
-        dxCall: msg.dxCall,
+        dxCall: dxCall || null,
+        dxGrid: dxGrid,
+        dxLat,
+        dxLon,
         deCall: msg.deCall,
         deGrid: msg.deGrid,
         txEnabled: msg.txEnabled,
         transmitting: msg.transmitting,
         decoding: msg.decoding,
         subMode: msg.subMode,
-        band: msg.dialFrequency ? freqToBand(msg.dialFrequency) : null,
+        band: newBand,
         configName: msg.configName,
         txMessage: msg.txMessage,
+        bandChanged: bandChanged ? { from: prev.band, to: newBand, at: msg.timestamp } : prev.bandChanged || null,
       };
+
+      // Clear bandChanged flag after 10 seconds (client has had time to see it)
+      if (bandChanged) {
+        setTimeout(() => {
+          const client = state.clients[msg.id];
+          if (client?.bandChanged?.at === msg.timestamp) {
+            client.bandChanged = null;
+          }
+        }, 10000);
+      }
       break;
     }
 
@@ -11249,7 +11556,11 @@ function handleWSJTXMessage(msg, state) {
 
       // If no grid from message, try callsign → grid cache (from prior CQ/exchange with grid)
       if (!decode.lat) {
-        const targetCall = (parsed.caller || parsed.dxCall || '').toUpperCase();
+        const targetCall = (
+          parsed.caller ||
+          (parsed.deCall == CONFIG.callsign ? parsed.dxCall : parsed.deCall) ||
+          ''
+        ).toUpperCase();
         if (targetCall) {
           const cached = wsjtxGridCache.get(targetCall);
           if (cached) {
@@ -11263,7 +11574,11 @@ function handleWSJTXMessage(msg, state) {
 
       // Try HamQTH callsign cache (DXCC-level, more accurate than prefix centroid)
       if (!decode.lat) {
-        const rawCall = (parsed.caller || parsed.dxCall || '').toUpperCase();
+        const rawCall = (
+          parsed.caller ||
+          (parsed.deCall == CONFIG.callsign ? parsed.dxCall : parsed.deCall) ||
+          ''
+        ).toUpperCase();
         const targetCall = extractBaseCallsign(rawCall);
         if (targetCall) {
           const cached = callsignLookupCache.get(targetCall);
@@ -11306,7 +11621,7 @@ function handleWSJTXMessage(msg, state) {
 
       // Last resort: estimate from callsign prefix
       if (!decode.lat) {
-        const rawCall = parsed.caller || parsed.dxCall || '';
+        const rawCall = parsed.caller || (parsed.deCall == CONFIG.callsign ? parsed.dxCall : parsed.deCall) || '';
         const targetCall = extractBaseCallsign(rawCall);
         if (targetCall) {
           const prefixLoc = estimateLocationFromPrefix(targetCall);
@@ -11397,6 +11712,14 @@ function handleWSJTXMessage(msg, state) {
         power: msg.power,
         timestamp: msg.timestamp,
       };
+      // Resolve grid to lat/lon for map plotting
+      if (msg.grid) {
+        const coords = gridToLatLon(msg.grid);
+        if (coords) {
+          wsprDecode.lat = coords.latitude;
+          wsprDecode.lon = coords.longitude;
+        }
+      }
       if (msg.isNew) {
         state.wspr.push(wsprDecode);
         if (state.wspr.length > 100) state.wspr.shift();

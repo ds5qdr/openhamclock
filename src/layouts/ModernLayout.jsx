@@ -26,6 +26,7 @@ import {
 } from '../components';
 import { useRig } from '../contexts/RigContext.jsx';
 import { calculateDistance, formatDistance } from '../utils/geo.js';
+import { DXGridInput } from '../components/DXGridInput.jsx';
 import useBreakpoint from '../hooks/app/useBreakpoint';
 
 export default function ModernLayout(props) {
@@ -149,6 +150,7 @@ export default function ModernLayout(props) {
         onMapBandFilterChange={setMapBandFilter}
         satellites={filteredSatellites}
         pskReporterSpots={filteredPskSpots}
+        showDeDxMarkers={mapLayers.showDeDxMarkers}
         showDXPaths={mapLayers.showDXPaths}
         showDXLabels={mapLayers.showDXLabels}
         onToggleDXLabels={toggleDXLabels}
@@ -169,7 +171,7 @@ export default function ModernLayout(props) {
         hoveredSpot={hoveredSpot}
         callsign={config.callsign}
         lowMemoryMode={config.lowMemoryMode}
-        units={config.units}
+        allUnits={config.allUnits}
         mouseZoom={config.mouseZoom}
         onSpotClick={tuneTo}
       />
@@ -211,7 +213,7 @@ export default function ModernLayout(props) {
           <span style={{ color: 'var(--accent-purple)', fontWeight: '600' }}>{deSunTimes.sunset}</span>
         </div>
       </div>
-      <WeatherPanel weatherData={localWeather} units={config.units} />
+      <WeatherPanel weatherData={localWeather} allUnits={config.allUnits} />
     </div>
   );
 
@@ -239,9 +241,12 @@ export default function ModernLayout(props) {
         </button>
       </div>
       <div style={{ fontFamily: 'JetBrains Mono', fontSize: '14px' }}>
-        <div style={{ color: 'var(--accent-green)', fontSize: '22px', fontWeight: '700', letterSpacing: '1px' }}>
-          {dxGrid}
-        </div>
+        <DXGridInput
+          dxGrid={dxGrid}
+          onDXChange={handleDXChange}
+          dxLocked={dxLocked}
+          style={{ color: 'var(--accent-green)', fontSize: '22px', fontWeight: '700', letterSpacing: '1px' }}
+        />
         <DXLocalTime
           currentTime={currentTime}
           dxLocation={dxLocation}
@@ -272,7 +277,7 @@ export default function ModernLayout(props) {
             <span style={{ color: 'var(--accent-cyan)', fontWeight: '600' }}>
               {(() => {
                 const km = calculateDistance(config.location.lat, config.location.lon, dxLocation.lat, dxLocation.lon);
-                return `📏 ${formatDistance(km, config.units)}`;
+                return `📏 ${formatDistance(km, config.allUnits.dist)}`;
               })()}
             </span>
           </span>
@@ -284,7 +289,7 @@ export default function ModernLayout(props) {
           <span style={{ color: 'var(--accent-purple)', fontWeight: '600' }}>{dxSunTimes.sunset}</span>
         </div>
       </div>
-      {showDxWeather && <WeatherPanel weatherData={dxWeather} units={config.units} />}
+      {showDxWeather && <WeatherPanel weatherData={dxWeather} allUnits={config.allUnits} />}
     </div>
   );
 
@@ -344,6 +349,7 @@ export default function ModernLayout(props) {
       showPOTALabels={mapLayers.showPOTALabels}
       togglePOTALabels={togglePOTALabels}
       onPOTASpotClick={handleParkSpotClick}
+      onPOTAHoverSpot={setHoveredSpot}
       potaFilters={potaFilters}
       setShowPotaFilters={setShowPotaFilters}
       filteredPotaSpots={filteredPotaSpots}
@@ -356,6 +362,7 @@ export default function ModernLayout(props) {
       showSOTALabels={mapLayers.showSOTALabels}
       toggleSOTALabels={toggleSOTALabels}
       onSOTASpotClick={handleParkSpotClick}
+      onSOTAHoverSpot={setHoveredSpot}
       sotaFilters={sotaFilters}
       setShowSotaFilters={setShowSotaFilters}
       filteredSotaSpots={filteredSotaSpots}
@@ -368,6 +375,7 @@ export default function ModernLayout(props) {
       showWWFFLabels={mapLayers.showWWFFLabels}
       toggleWWFFLabels={toggleWWFFLabels}
       onWWFFSpotClick={handleParkSpotClick}
+      onWWFFHoverSpot={setHoveredSpot}
       wwffFilters={wwffFilters}
       setShowWwffFilters={setShowWwffFilters}
       filteredWwffSpots={filteredWwffSpots}
@@ -380,6 +388,7 @@ export default function ModernLayout(props) {
       showWWBOTALabels={mapLayers.showWWBOTALabels}
       toggleWWBOTALabels={toggleWWBOTALabels}
       onWWBOTASpotClick={handleParkSpotClick}
+      onWWBOTAHoverSpot={setHoveredSpot}
       wwbotaFilters={wwbotaFilters}
       setShowWwbotaFilters={setShowWwbotaFilters}
       filteredWwbotaSpots={filteredWwbotaSpots}
@@ -464,8 +473,10 @@ export default function ModernLayout(props) {
                 propagation={propagation.data}
                 loading={propagation.loading}
                 bandConditions={bandConditions}
-                units={config.units}
+                allUnits={config.allUnits}
                 propConfig={config.propagation}
+                dxSpots={dxClusterData.spots}
+                clusterFilters={dxFilters}
               />,
               'prop',
             )}
@@ -521,8 +532,10 @@ export default function ModernLayout(props) {
                   propagation={propagation.data}
                   loading={propagation.loading}
                   bandConditions={bandConditions}
-                  units={config.units}
+                  allUnits={config.allUnits}
                   propConfig={config.propagation}
+                  dxSpots={dxClusterData.spots}
+                  clusterFilters={dxFilters}
                 />
               )}
             </div>
@@ -594,8 +607,10 @@ export default function ModernLayout(props) {
               propagation={propagation.data}
               loading={propagation.loading}
               bandConditions={bandConditions}
-              units={config.units}
+              allUnits={config.allUnits}
               propConfig={config.propagation}
+              dxSpots={dxClusterData.spots}
+              clusterFilters={dxFilters}
             />
           )}
         </div>

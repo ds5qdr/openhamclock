@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG = {
   location: { lat: 40.015, lon: -105.2705 }, // Boulder, CO (default)
   defaultDX: { lat: 35.6762, lon: 139.6503 }, // Tokyo
   units: 'imperial', // 'imperial' or 'metric'
+  allUnits: { dist: 'imperial', temp: 'imperial', press: 'imperial' },
   propagation: {
     mode: 'SSB', // SSB, CW, FT8, FT4, WSPR, JS8, RTTY, PSK31
     power: 100, // TX power in watts
@@ -85,40 +86,14 @@ export const fetchServerConfig = async () => {
 
 /**
  * Load config - localStorage is the primary source of truth
- * Server config only provides defaults for first-time users
+ * Server config provides baseline values from .env, then localStorage overrides
  */
 export const loadConfig = () => {
   // Start with defaults
   let config = { ...DEFAULT_CONFIG };
 
-  // Try to load from localStorage FIRST (user's saved settings)
-  let localConfig = null;
-  try {
-    const saved = localStorage.getItem('openhamclock_config');
-    if (saved) {
-      localConfig = JSON.parse(saved);
-      console.log('[Config] Loaded from localStorage:', localConfig.callsign);
-    }
-  } catch (e) {
-    console.error('Error loading config from localStorage:', e);
-  }
-
-  // If user has localStorage config, use it (this is the priority)
-  if (localConfig) {
-    config = {
-      ...config,
-      ...localConfig,
-      // Ensure nested objects are properly merged
-      location: localConfig.location || config.location,
-      defaultDX: localConfig.defaultDX || config.defaultDX,
-      panels: { ...config.panels, ...localConfig.panels },
-      refreshIntervals: { ...config.refreshIntervals, ...localConfig.refreshIntervals },
-    };
-  }
-  // Only use server config if NO localStorage exists (first-time user)
-  else if (serverConfig) {
-    // Server config provides initial defaults for new users
-    // But only if they have real values (not N0CALL)
+  // Apply server config baseline (.env/config.json) when available
+  if (serverConfig) {
     config = {
       ...config,
       callsign: serverConfig.callsign && serverConfig.callsign !== 'N0CALL' ? serverConfig.callsign : config.callsign,
@@ -132,6 +107,7 @@ export const loadConfig = () => {
         lon: serverConfig.dxLongitude || config.defaultDX.lon,
       },
       units: serverConfig.units || config.units,
+      allUnits: serverConfig.allUnits || config.allUnits,
       theme: serverConfig.theme || config.theme,
       layout: serverConfig.layout || config.layout,
       mouseZoom: serverConfig.mouseZoom || config.mouseZoom,
@@ -141,6 +117,31 @@ export const loadConfig = () => {
       showPota: serverConfig.showPota ?? config.showPota,
       showDxPaths: serverConfig.showDxPaths ?? config.showDxPaths,
       panels: { ...config.panels, ...serverConfig.panels },
+    };
+  }
+
+  // Try to load from localStorage FIRST (user's saved settings)
+  let localConfig = null;
+  try {
+    const saved = localStorage.getItem('openhamclock_config');
+    if (saved) {
+      localConfig = JSON.parse(saved);
+      console.log('[Config] Loaded from localStorage:', localConfig.callsign);
+    }
+  } catch (e) {
+    console.error('Error loading config from localStorage:', e);
+  }
+
+  // Local browser settings override server/default values
+  if (localConfig) {
+    config = {
+      ...config,
+      ...localConfig,
+      // Ensure nested objects are properly merged
+      location: localConfig.location || config.location,
+      defaultDX: localConfig.defaultDX || config.defaultDX,
+      panels: { ...config.panels, ...localConfig.panels },
+      refreshIntervals: { ...config.refreshIntervals, ...localConfig.refreshIntervals },
     };
   }
 

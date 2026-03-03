@@ -744,7 +744,10 @@ All configuration is done through the `.env` file. On first run, this file is au
 
 | Variable      | Default     | Description                                                                                                                                                          |
 | ------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNITS`       | `imperial`  | `imperial` (°F, miles) or `metric` (°C, km). Affects weather display and distance calculations.                                                                      |
+| `UNITS`       | `imperial`  | `imperial` This setting is deprecated and no longer used.                                                                                                            |
+| `DISTUNITS`   | `imperial`. | `imperial` (miles, inches, ...) or `metric (km, m, ...) For displaying anything involving a distance or speed.                                                       |
+| `TEMPUNITS`   | `imperial`. | `imperial` (°F) or `metric` (°C). For displaying Temperatures.                                                                                                       |
+| `PRESSUNITS`. | `imperial`  | `imperial` (inHg) or `metric` (hPa)                                                                                                                                  |
 | `TIME_FORMAT` | `12`        | `12` or `24` hour clock format. Can also be toggled by clicking the local clock in the header.                                                                       |
 | `THEME`       | `dark`      | `dark`, `light`, `legacy`, or `retro`. See [Themes and Layouts](#themes-and-layouts).                                                                                |
 | `LAYOUT`      | `modern`    | `modern` or `classic`. See [Themes and Layouts](#themes-and-layouts).                                                                                                |
@@ -799,7 +802,33 @@ Your `.env` file is never overwritten by updates, so your configuration is alway
 
 ### Local / Desktop
 
-The simplest option. Just need Node.js 20 or newer.
+Works on Linux, macOS, and Windows. Requires Node.js 18+ (22 LTS recommended) and Git.
+
+**One-line install (Linux / macOS):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/setup-linux.sh | bash
+```
+
+This clones the repo, installs dependencies, builds the frontend, creates a `.env` config file, and generates a `run.sh` launcher. After install, edit `~/openhamclock/.env` to set your `CALLSIGN` and `LOCATOR`, then start with `~/openhamclock/run.sh`.
+
+**Auto-start on boot (Linux with systemd — Ubuntu, Debian, Fedora, etc.):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/setup-linux.sh | bash -s -- --service
+```
+
+This does everything above plus creates a `systemd` service that starts OpenHamClock automatically on boot. Manage it with:
+
+```bash
+sudo systemctl restart openhamclock    # Restart (after .env changes)
+sudo systemctl status openhamclock     # Check status
+sudo journalctl -u openhamclock -f     # View logs
+```
+
+> **macOS note:** macOS does not use systemd, so the `--service` flag is not supported. Use `~/openhamclock/run.sh` to start manually, or run `npm run electron` for a native desktop window.
+
+**Manual install (all platforms including Windows):**
 
 ```bash
 git clone https://github.com/accius/openhamclock.git
@@ -813,7 +842,7 @@ Open [http://localhost:3000](http://localhost:3000).
 **Access from other devices on your LAN** (phone, tablet, another PC):
 
 1. Edit `.env` and set `HOST=0.0.0.0`
-2. Restart with `npm start`
+2. Restart with `npm start` (or `sudo systemctl restart openhamclock` if using the service)
 3. Open `http://<your-computer-ip>:3000` from the other device (e.g., `http://192.168.1.100:3000`)
 
 To find your local IP: run `ipconfig` (Windows) or `ifconfig` / `ip addr` (Mac/Linux).
@@ -822,13 +851,21 @@ To find your local IP: run `ipconfig` (Windows) or `ifconfig` / `ip addr` (Mac/L
 
 One-line install for Raspberry Pi (3B, 3B+, 4, 5). Supports both graphical and headless operation.
 
+**Supported operating systems:**
+
+| OS                       | Debian | Status                 | Display              |
+| ------------------------ | ------ | ---------------------- | -------------------- |
+| Raspberry Pi OS Bookworm | 12     | ✅ Recommended         | X11 (openbox / LXDE) |
+| Raspberry Pi OS Trixie   | 13     | ✅ Supported           | Wayland (labwc)      |
+| Raspberry Pi OS Bullseye | 11     | ⚠️ Legacy, best-effort | X11                  |
+
 **Standard install (kiosk mode — auto-starts fullscreen on boot):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/setup-pi.sh | bash -s -- --kiosk
 ```
 
-This is the recommended option for a dedicated shack display. The Pi boots directly into a fullscreen Chromium browser showing OpenHamClock. No desktop environment needed.
+This is the recommended option for a dedicated shack display. The Pi boots directly into a fullscreen Chromium browser showing OpenHamClock. The kiosk launcher automatically detects Wayland (Trixie/labwc) or X11 (Bookworm/LXDE) and adjusts accordingly — no manual configuration needed.
 
 **Server-only install (headless, no GUI):**
 
@@ -847,12 +884,13 @@ curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/se
 After installation, configure your station:
 
 ```bash
-cd ~/openhamclock
-nano .env          # Set your callsign and locator
-./restart.sh       # Apply changes
+nano ~/openhamclock/.env              # Set CALLSIGN and LOCATOR
+sudo systemctl restart openhamclock   # Apply changes
 ```
 
-The Pi setup script installs Node.js 20, clones the repository, builds the frontend, creates a systemd service (`openhamclock.service`) for automatic startup, and optionally configures Chromium in kiosk mode. It also installs `fonts-noto-color-emoji` so that all emoji icons display correctly in Chromium.
+The setup script creates `.env` automatically from the built-in template and enables server-side settings sync (`SETTINGS_SYNC=true`) for Pi installs. This means your `CALLSIGN` and `LOCATOR` values from `.env` appear on screen as soon as the service restarts — no manual UI configuration step required.
+
+The Pi setup script installs Node.js 22 LTS, clones the repository, builds the frontend, creates a systemd service (`openhamclock.service`) for automatic startup, and optionally configures Chromium in kiosk mode. It also installs `fonts-noto-color-emoji` so that all emoji icons display correctly in Chromium.
 
 ### Docker
 
@@ -1092,7 +1130,7 @@ openhamclock/
 ├── electron/                 # Electron desktop app wrapper (experimental)
 ├── scripts/                  # Setup and update scripts
 │   ├── setup-pi.sh               # Raspberry Pi one-line installer
-│   ├── setup-linux.sh            # Generic Linux installer
+│   ├── setup-linux.sh            # Linux / macOS installer (--service for systemd)
 │   ├── setup-windows.ps1         # Windows PowerShell installer
 │   └── update.sh                 # Update script (backup → pull → rebuild → restore)
 ├── Dockerfile                # Multi-stage Docker build
@@ -1214,6 +1252,9 @@ sudo apt install fonts-noto-color-emoji
 ```
 
 Then restart your browser (or reboot if running in kiosk mode). The Raspberry Pi setup script now installs this automatically. On Windows and macOS, emoji fonts are bundled with the OS and no action is needed.
+
+**Q: Chromium shows a "keyring" unlock prompt on every boot in kiosk mode — how do I prevent it?**
+A: This happens when Chromium tries to use the system keyring (gnome-keyring / kwallet) to protect its internal credential store, but the desktop session manager hasn't unlocked it yet. The Pi setup script already passes `--password-store=basic` to Chromium, which tells it to use a plain local store instead and avoids the prompt entirely. If you installed OpenHamClock before this fix was included, update your `kiosk.sh` by re-running the setup script, or add `--password-store=basic` manually to the Chromium launch line in `~/openhamclock/kiosk.sh`.
 
 ---
 

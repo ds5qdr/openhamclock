@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { SettingsPanel, DXFilterManager, PSKFilterManager } from './components';
+import { SettingsPanel, DXFilterManager, PSKFilterManager, KeybindingsPanel } from './components';
 
 import DockableLayout from './layouts/DockableLayout.jsx';
 import ClassicLayout from './layouts/ClassicLayout.jsx';
@@ -47,6 +47,7 @@ import useLocalInstall from './hooks/app/useLocalInstall';
 import useVersionCheck from './hooks/app/useVersionCheck';
 import WhatsNew from './components/WhatsNew.jsx';
 import { initCtyLookup } from './utils/ctyLookup.js';
+import { getAllLayers } from './plugins/layerRegistry.js';
 import ActivateFilterManager from './components/ActivateFilterManager.jsx';
 
 // Load DXCC entity database on app startup (non-blocking)
@@ -61,6 +62,7 @@ const App = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showDXFilters, setShowDXFilters] = useState(false);
   const [showPSKFilters, setShowPSKFilters] = useState(false);
+  const [showKeybindings, setShowKeybindings] = useState(false);
   const [showPotaFilters, setShowPotaFilters] = useState(false);
   const [showSotaFilters, setShowSotaFilters] = useState(false);
   const [showWwffFilters, setShowWwffFilters] = useState(false);
@@ -97,6 +99,87 @@ const App = () => {
       }
     }
   }, [configLoaded, config.callsign]);
+
+  // ── Keyboard shortcuts for map layer toggling ──
+  // Uses pinned shortcuts from layer metadata when available,
+  // falls back to first unique letter from layer name.
+  const layerShortcuts = useMemo(() => {
+    const layers = getAllLayers();
+    const map = {};
+    const used = new Set();
+
+    // First pass: assign pinned shortcuts from layer metadata
+    for (const layer of layers) {
+      if (layer.shortcut) {
+        const key = layer.shortcut.toLowerCase();
+        if (/^[a-z]$/.test(key) && !used.has(key)) {
+          map[key] = layer.id;
+          used.add(key);
+        }
+      }
+    }
+
+    // Second pass: auto-assign remaining layers (first unique letter)
+    for (const layer of layers) {
+      if (map[layer.shortcut?.toLowerCase()] === layer.id) continue; // already pinned
+      const name = (layer.name || layer.id || '').toLowerCase();
+      for (const char of name) {
+        if (/[a-z]/.test(char) && !used.has(char)) {
+          map[char] = layer.id;
+          used.add(char);
+          break;
+        }
+      }
+    }
+    return map;
+  }, []);
+
+  const keybindingsList = useMemo(() => {
+    return Object.entries(layerShortcuts)
+      .map(([key, id]) => {
+        const layer = getAllLayers().find((l) => l.id === id);
+        let name = layer?.name || layer?.id || id;
+        if (name?.startsWith('plugins.layers.')) {
+          name = t(name, name);
+        }
+        return { key: key.toUpperCase(), description: `Toggle ${name}` };
+      })
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }, [layerShortcuts, t]);
+
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (
+        e.ctrlKey ||
+        e.metaKey ||
+        e.altKey ||
+        showSettings ||
+        showDXFilters ||
+        showPSKFilters ||
+        showKeybindings ||
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'TEXTAREA' ||
+        document.activeElement?.tagName === 'SELECT'
+      )
+        return;
+
+      if (e.key === '?') {
+        setShowKeybindings((v) => !v);
+        e.preventDefault();
+        return;
+      }
+
+      const layerId = layerShortcuts[e.key.toLowerCase()];
+      if (layerId && window.hamclockLayerControls) {
+        const isEnabled = window.hamclockLayerControls.layers?.find((l) => l.id === layerId)?.enabled ?? false;
+        window.hamclockLayerControls.toggleLayer(layerId, !isEnabled);
+        e.preventDefault();
+      }
+    };
+
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [showSettings, showDXFilters, showPSKFilters, showKeybindings, layerShortcuts]);
 
   const handleResetLayout = useCallback(() => {
     resetLayout();
@@ -138,6 +221,7 @@ const App = () => {
 
   const {
     mapLayers,
+    toggleDeDxMarkers,
     toggleDXPaths,
     toggleDXLabels,
     togglePOTA,
@@ -153,6 +237,7 @@ const App = () => {
     togglePSKPaths,
     toggleWSJTX,
     toggleDXNews,
+    toggleRotatorBearing,
     toggleAPRS,
   } = useMapLayers();
 
@@ -193,15 +278,28 @@ const App = () => {
   const propagation = usePropagation(config.location, dxLocation, config.propagation);
   const mySpots = useMySpots(config.callsign);
   const satellites = useSatellites(config.location);
-  const localWeather = useWeather(config.location, config.units);
-  const dxWeather = useWeather(dxLocation, config.units);
+  const localWeather = useWeather(config.location, config.allUnits);
+  const dxWeather = useWeather(dxLocation, config.allUnits);
   const pskReporter = usePSKReporter(config.callsign, {
     minutes: config.lowMemoryMode ? 5 : 30,
-    enabled: config.callsign !== 'N0CALL',
+    enabled: pskFilters?.filterMode === 'grid' ? !!config.locator : config.callsign !== 'N0CALL',
     maxSpots: config.lowMemoryMode ? 50 : 500,
+    filterMode: pskFilters?.filterMode || 'call',
+    gridSquare: config.locator || '',
   });
   const wsjtx = useWSJTX();
   const aprsData = useAPRS();
+
+  // ── WSJT-X → DX Target ──
+  // When the operator selects a callsign in WSJT-X (setting Std Msgs),
+  // the server resolves it to coordinates. Set the DX target automatically
+  // so propagation predictions and beam heading update in real time.
+  // Respects the DX Lock toggle — if locked, WSJT-X changes are ignored.
+  useEffect(() => {
+    if (wsjtx.dxTarget?.lat != null && wsjtx.dxTarget?.lon != null) {
+      handleDXChange({ lat: wsjtx.dxTarget.lat, lon: wsjtx.dxTarget.lon });
+    }
+  }, [wsjtx.dxTarget, handleDXChange]);
 
   const { satelliteFilters, setSatelliteFilters, filteredSatellites } = useSatellitesFilters(satellites.data);
 
@@ -264,19 +362,19 @@ const App = () => {
 
   const filteredPotaSpots = useMemo(() => {
     return ActivateFilter(potaSpots, potaFilters);
-  }, [potaSpots, potaFilters]);
+  }, [potaSpots.data, potaFilters]);
 
   const filteredWwffSpots = useMemo(() => {
     return ActivateFilter(wwffSpots, wwffFilters);
-  }, [wwffSpots, wwffFilters]);
+  }, [wwffSpots.data, wwffFilters]);
 
   const filteredSotaSpots = useMemo(() => {
     return ActivateFilter(sotaSpots, sotaFilters);
-  }, [sotaSpots, sotaFilters]);
+  }, [sotaSpots.data, sotaFilters]);
 
   const filteredWwbotaSpots = useMemo(() => {
     return ActivateFilter(wwbotaSpots, wwbotaFilters);
-  }, [wwbotaSpots, wwbotaFilters]);
+  }, [wwbotaSpots.data, wwbotaFilters]);
 
   const wsjtxMapSpots = useMemo(() => {
     // Apply same age filter as panel (stored in localStorage)
@@ -388,6 +486,7 @@ const App = () => {
     wwbotaFilters,
     setWwbotaFilters,
     mapLayers,
+    toggleDeDxMarkers,
     toggleDXPaths,
     toggleDXLabels,
     togglePOTA,
@@ -403,6 +502,7 @@ const App = () => {
     togglePSKPaths,
     toggleWSJTX,
     toggleDXNews,
+    toggleRotatorBearing,
     toggleAPRS,
     hoveredSpot,
     setHoveredSpot,
@@ -411,6 +511,7 @@ const App = () => {
     rightSidebarVisible,
     getGridTemplateColumns,
     scale,
+    keybindingsList,
   };
 
   return (
@@ -446,6 +547,7 @@ const App = () => {
         satelliteFilters={satelliteFilters}
         onSatelliteFiltersChange={setSatelliteFilters}
         mapLayers={mapLayers}
+        onToggleDeDxMarkers={toggleDeDxMarkers}
         onToggleDXNews={toggleDXNews}
         wakeLockStatus={wakeLockStatus}
       />
@@ -460,6 +562,13 @@ const App = () => {
         onFilterChange={setPskFilters}
         isOpen={showPSKFilters}
         onClose={() => setShowPSKFilters(false)}
+        callsign={config.callsign}
+        locator={config.locator}
+      />
+      <KeybindingsPanel
+        isOpen={showKeybindings}
+        onClose={() => setShowKeybindings(false)}
+        keybindings={keybindingsList}
       />
       <ActivateFilterManager
         name="POTA"

@@ -7,12 +7,14 @@ import React, { useState } from 'react';
 const BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m', '70cm'];
 const MODES = [
   '-FT8',
+  'AM',
   'CONTESTI',
   'CW',
   'CWU',
   'DFCW-90',
   'DOMINO',
   'ECHO',
+  'FM',
   'FREEDV',
   'FSK441',
   'FSQ',

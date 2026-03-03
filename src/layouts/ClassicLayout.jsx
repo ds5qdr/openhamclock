@@ -2,6 +2,7 @@
  * Classic HamClock-style layout
  */
 import { DXNewsTicker, WorldMap } from '../components';
+import { DXGridInput } from '../components/DXGridInput.jsx';
 import { getBandColor, getBandColorForBand } from '../utils';
 import CallsignLink from '../components/CallsignLink.jsx';
 import DonateButton from '../components/DonateButton.jsx';
@@ -431,6 +432,7 @@ export default function ClassicLayout(props) {
             onMapBandFilterChange={setMapBandFilter}
             satellites={filteredSatellites}
             pskReporterSpots={filteredPskSpots}
+            showDeDxMarkers={mapLayers.showDeDxMarkers}
             showDXPaths={mapLayers.showDXPaths}
             showDXLabels={mapLayers.showDXLabels}
             onToggleDXLabels={toggleDXLabels}
@@ -447,7 +449,7 @@ export default function ClassicLayout(props) {
             hoveredSpot={hoveredSpot}
             callsign={config.callsign}
             lowMemoryMode={config.lowMemoryMode}
-            units={config.units}
+            allUnits={config.allUnits}
             mouseZoom={config.mouseZoom}
             onSpotClick={tuneTo}
           />
@@ -752,6 +754,7 @@ export default function ClassicLayout(props) {
             onMapBandFilterChange={setMapBandFilter}
             satellites={filteredSatellites}
             pskReporterSpots={filteredPskSpots}
+            showDeDxMarkers={mapLayers.showDeDxMarkers}
             showDXPaths={mapLayers.showDXPaths}
             showDXLabels={mapLayers.showDXLabels}
             onToggleDXLabels={toggleDXLabels}
@@ -769,7 +772,7 @@ export default function ClassicLayout(props) {
             hideOverlays={true}
             callsign={config.callsign}
             lowMemoryMode={config.lowMemoryMode}
-            units={config.units}
+            allUnits={config.allUnits}
             mouseZoom={config.mouseZoom}
             onSpotClick={tuneTo}
           />
@@ -1380,6 +1383,7 @@ export default function ClassicLayout(props) {
             onMapBandFilterChange={setMapBandFilter}
             satellites={filteredSatellites}
             pskReporterSpots={filteredPskSpots}
+            showDeDxMarkers={mapLayers.showDeDxMarkers}
             showDXPaths={mapLayers.showDXPaths}
             showDXLabels={mapLayers.showDXLabels}
             onToggleDXLabels={toggleDXLabels}
@@ -1397,7 +1401,7 @@ export default function ClassicLayout(props) {
             hideOverlays={true}
             callsign={config.callsign}
             lowMemoryMode={config.lowMemoryMode}
-            units={config.units}
+            allUnits={config.allUnits}
             mouseZoom={config.mouseZoom}
             onSpotClick={tuneTo}
           />
@@ -1418,7 +1422,14 @@ export default function ClassicLayout(props) {
             }}
           >
             <span>
-              {deGrid} → {dxGrid} • {dxLocked ? t('app.dxLock.lockedShort') : t('app.dxLock.clickToSet')}
+              {deGrid} →{' '}
+              <DXGridInput
+                dxGrid={dxGrid}
+                onDXChange={handleDXChange}
+                dxLocked={dxLocked}
+                style={{ color: 'var(--text-muted)', fontSize: '14px' }}
+              />{' '}
+              • {dxLocked ? t('app.dxLock.lockedShort') : t('app.dxLock.clickToSet')}
             </span>
             <button
               onClick={handleToggleDxLock}

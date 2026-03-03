@@ -87,6 +87,7 @@ export const WorldMap = ({
   pskReporterSpots,
   wsjtxSpots,
   showDXPaths,
+  showDeDxMarkers = true,
   showDXLabels,
   onToggleDXLabels,
   showPOTA,
@@ -997,6 +998,8 @@ export const WorldMap = ({
     dxMarkerRef.current.forEach((m) => map.removeLayer(m));
     dxMarkerRef.current = [];
 
+    if (!showDeDxMarkers) return;
+
     // DE Marker — replicate across world copies
     replicatePoint(deLocation.lat, deLocation.lon).forEach(([lat, lon]) => {
       const deIcon = L.divIcon({
@@ -1024,7 +1027,7 @@ export const WorldMap = ({
       attachPopupWeather(m, lat, lon, baseHtml);
       dxMarkerRef.current.push(m);
     });
-  }, [deLocation, dxLocation, allUnits, dxWeatherAllowed]);
+  }, [deLocation, dxLocation, allUnits, dxWeatherAllowed, showDeDxMarkers]);
 
   // Update sun/moon markers every 60 seconds (matches terminator refresh)
   useEffect(() => {
@@ -1691,10 +1694,11 @@ export const WorldMap = ({
 
     if (showWSJTX && wsjtxSpots && wsjtxSpots.length > 0 && hasValidDE) {
       // Deduplicate by callsign - keep most recent
-      // For CQ: caller is the station. For QSO: dxCall is the remote station.
+      // For CQ: caller is the station. If deCall is us (i.e. callsign), then it's a QSO and the call is dxCall,
+      // otherwise the call is deCall
       const seen = new Map();
       wsjtxSpots.forEach((spot) => {
-        const call = spot.caller || spot.dxCall || '';
+        const call = spot.caller || (spot.deCall == callsign ? spot.dxCall : spot.deCall) || '';
         if (call && (!seen.has(call) || spot.timestamp > seen.get(call).timestamp)) {
           seen.set(call, spot);
         }

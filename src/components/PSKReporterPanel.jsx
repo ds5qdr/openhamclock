@@ -29,6 +29,7 @@ const PSKReporterPanel = ({
   wsjtxDecodes = [],
   wsjtxClients = {},
   wsjtxQsos = [],
+  wsjtxWspr = [],
   wsjtxStats = {},
   wsjtxLoading,
   wsjtxEnabled,
@@ -91,6 +92,8 @@ const PSKReporterPanel = ({
     connected = false,
     source = '',
     refresh = () => {},
+    filterMode = 'call',
+    identifier = '',
   } = pskReporter;
 
   // ── PSK filtering ──
@@ -125,6 +128,13 @@ const PSKReporterPanel = ({
   // ── WSJT-X helpers ──
   const activeClients = Object.entries(wsjtxClients);
   const primaryClient = activeClients[0]?.[1] || null;
+  const isWSPRMode = primaryClient?.mode?.toUpperCase() === 'WSPR';
+
+  // WSPR decodes filtered by age
+  const filteredWspr = useMemo(() => {
+    const ageCutoff = Date.now() - wsjtxAge * 60 * 1000;
+    return wsjtxWspr.filter((d) => d.timestamp >= ageCutoff).reverse();
+  }, [wsjtxWspr, wsjtxAge]);
 
   // Build unified filter options: All, CQ Only, then each available band
   const wsjtxFilterOptions = useMemo(() => {
@@ -259,9 +269,26 @@ const PSKReporterPanel = ({
 
         {/* Right controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {/* PSK: status dot + filter + refresh */}
+          {/* PSK: status dot + grid badge + filter + refresh */}
           {panelMode === 'psk' && (
             <>
+              {filterMode === 'grid' && (
+                <span
+                  title={`Grid mode: showing all spots for ${identifier}`}
+                  style={{
+                    fontSize: '9px',
+                    fontWeight: '600',
+                    color: '#000',
+                    background: 'var(--accent-amber)',
+                    padding: '1px 4px',
+                    borderRadius: '3px',
+                    letterSpacing: '0.5px',
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}
+                >
+                  ⊞ {identifier?.substring(0, 4)}
+                </span>
+              )}
               {statusDot && (
                 <span style={{ color: statusDot.color, fontSize: '10px', lineHeight: 1 }}>{statusDot.char}</span>
               )}
@@ -365,7 +392,13 @@ const PSKReporterPanel = ({
               title={showPaths ? 'Hide path lines' : 'Show path lines'}
             >
               <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ verticalAlign: 'middle' }}>
-                <path d="M2 14L14 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="3 3" />
+                <path
+                  d="M2 14L14 2"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeDasharray="3 3"
+                />
                 <circle cx="2" cy="14" r="2" fill="currentColor" />
                 <circle cx="14" cy="2" r="2" fill="currentColor" />
               </svg>
@@ -381,16 +414,30 @@ const PSKReporterPanel = ({
             <button
               onClick={() => setActiveTabPersist('tx')}
               style={subTabBtn(activeTab === 'tx', '#4ade80')}
-              title={t('pskReporterPanel.tabs.heardTooltip')}
+              title={
+                filterMode === 'grid'
+                  ? `Stations hearing signals from ${identifier?.substring(0, 4)}`
+                  : t('pskReporterPanel.tabs.heardTooltip')
+              }
             >
-              ▲ {t('pskReporterPanel.tabs.heard', { count: pskFilterCount > 0 ? filteredTx.length : txCount })}
+              ▲{' '}
+              {filterMode === 'grid'
+                ? `Sent (${pskFilterCount > 0 ? filteredTx.length : txCount})`
+                : t('pskReporterPanel.tabs.heard', { count: pskFilterCount > 0 ? filteredTx.length : txCount })}
             </button>
             <button
               onClick={() => setActiveTabPersist('rx')}
               style={subTabBtn(activeTab === 'rx', '#60a5fa')}
-              title={t('pskReporterPanel.tabs.hearingTooltip')}
+              title={
+                filterMode === 'grid'
+                  ? `Stations heard at ${identifier?.substring(0, 4)}`
+                  : t('pskReporterPanel.tabs.hearingTooltip')
+              }
             >
-              ▼ {t('pskReporterPanel.tabs.hearing', { count: pskFilterCount > 0 ? filteredRx.length : rxCount })}
+              ▼{' '}
+              {filterMode === 'grid'
+                ? `Rcvd (${pskFilterCount > 0 ? filteredRx.length : rxCount})`
+                : t('pskReporterPanel.tabs.hearing', { count: pskFilterCount > 0 ? filteredRx.length : rxCount })}
             </button>
           </>
         ) : (
@@ -402,6 +449,15 @@ const PSKReporterPanel = ({
             >
               {t('pskReporterPanel.wsjtx.decodes', { count: filteredDecodes.length })}
             </button>
+            {(isWSPRMode || wsjtxWspr.length > 0) && (
+              <button
+                onClick={() => setWsjtxTab('wspr')}
+                style={subTabBtn(wsjtxTab === 'wspr', '#22d3ee')}
+                title="WSPR decodes received by WSJT-X"
+              >
+                WSPR ({filteredWspr.length})
+              </button>
+            )}
             <button
               onClick={() => setWsjtxTab('qsos')}
               style={subTabBtn(wsjtxTab === 'qsos', '#a78bfa')}
@@ -418,7 +474,7 @@ const PSKReporterPanel = ({
         {/* === PSKReporter content === */}
         {panelMode === 'psk' && (
           <>
-            {!callsign || callsign === 'N0CALL' ? (
+            {filterMode !== 'grid' && (!callsign || callsign === 'N0CALL') ? (
               <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px', fontSize: '11px' }}>
                 {t('pskReporterPanel.psk.setCallsign')}
               </div>
@@ -435,9 +491,11 @@ const PSKReporterPanel = ({
               <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-muted)', fontSize: '11px' }}>
                 {pskFilterCount > 0
                   ? t('pskReporterPanel.psk.noSpotsFiltered')
-                  : activeTab === 'tx'
-                    ? t('pskReporterPanel.psk.waitingForSpots')
-                    : t('pskReporterPanel.psk.noStationsHeard')}
+                  : filterMode === 'grid'
+                    ? `Waiting for spots in ${identifier?.substring(0, 4)}...`
+                    : activeTab === 'tx'
+                      ? t('pskReporterPanel.psk.waitingForSpots')
+                      : t('pskReporterPanel.psk.noStationsHeard')}
               </div>
             ) : (
               filteredReports.slice(0, 25).map((report, i) => {
@@ -513,7 +571,7 @@ const PSKReporterPanel = ({
         {panelMode === 'wsjtx' && (
           <>
             {/* No client connected */}
-            {!wsjtxLoading && activeClients.length === 0 && wsjtxDecodes.length === 0 ? (
+            {!wsjtxLoading && activeClients.length === 0 && wsjtxDecodes.length === 0 && wsjtxWspr.length === 0 ? (
               <div
                 style={{
                   display: 'flex',
@@ -629,7 +687,9 @@ const PSKReporterPanel = ({
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px', fontSize: '11px' }}>
                     {wsjtxDecodes.length > 0
                       ? t('pskReporterPanel.wsjtx.noDecodesFiltered')
-                      : t('pskReporterPanel.wsjtx.listening')}
+                      : isWSPRMode
+                        ? 'WSPR mode active — decodes appear in the WSPR tab'
+                        : t('pskReporterPanel.wsjtx.listening')}
                   </div>
                 ) : (
                   filteredDecodes.map((d, i) => (
@@ -676,6 +736,68 @@ const PSKReporterPanel = ({
                       >
                         {d.message}
                       </span>
+                    </div>
+                  ))
+                )}
+              </>
+            ) : wsjtxTab === 'wspr' ? (
+              /* WSPR decodes tab */
+              <>
+                {filteredWspr.length === 0 ? (
+                  <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px', fontSize: '11px' }}>
+                    {wsjtxWspr.length > 0 ? 'No WSPR decodes in selected time window' : 'Waiting for WSPR decodes...'}
+                  </div>
+                ) : (
+                  filteredWspr.map((d, i) => (
+                    <div
+                      key={`wspr-${d.callsign}-${d.frequency}-${d.timestamp || i}`}
+                      onClick={() => {
+                        if (onSpotClick) {
+                          onSpotClick({
+                            sender: d.callsign,
+                            senderGrid: d.grid,
+                            lat: d.lat,
+                            lon: d.lon,
+                            freq: d.frequency,
+                            mode: 'WSPR',
+                            snr: d.snr,
+                          });
+                        }
+                      }}
+                      style={{
+                        display: 'flex',
+                        gap: '5px',
+                        padding: '2px 2px',
+                        borderBottom: '1px solid var(--border-color)',
+                        alignItems: 'baseline',
+                        cursor: d.lat ? 'pointer' : 'default',
+                      }}
+                    >
+                      <span style={{ color: 'var(--text-muted)', minWidth: '42px', fontSize: '10px' }}>{d.time}</span>
+                      <span
+                        style={{
+                          color: getSnrColor(d.snr),
+                          minWidth: '28px',
+                          textAlign: 'right',
+                          fontSize: '10px',
+                        }}
+                      >
+                        {d.snr != null ? `${d.snr > 0 ? '+' : ''}${d.snr}` : ''}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', minWidth: '28px', fontSize: '10px' }}>{d.dt}</span>
+                      <span style={{ color: '#22d3ee', fontWeight: '600', minWidth: '65px' }}>
+                        <CallsignLink call={d.callsign} color="#22d3ee" fontWeight="600" />
+                      </span>
+                      {d.grid && <span style={{ color: '#a78bfa', fontSize: '10px', minWidth: '35px' }}>{d.grid}</span>}
+                      <span style={{ color: 'var(--text-muted)', fontSize: '10px' }}>
+                        {d.power != null ? `${d.power}dBm` : ''}
+                      </span>
+                      {d.drift != null && d.drift !== 0 && (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '9px', opacity: 0.7 }}>
+                          {d.drift > 0 ? '+' : ''}
+                          {d.drift}Hz
+                        </span>
+                      )}
                     </div>
                   ))
                 )}

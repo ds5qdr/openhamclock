@@ -42,7 +42,7 @@ export const DXpeditionPanel = ({ data, loading }) => {
             <div className="loading-spinner" />
           </div>
         ) : data?.dxpeditions?.length > 0 ? (
-          data.dxpeditions.slice(0, 4).map((exp, idx) => {
+          data.dxpeditions.slice(0, 20).map((exp, idx) => {
             const style = getStatusStyle(exp);
             return (
               <div

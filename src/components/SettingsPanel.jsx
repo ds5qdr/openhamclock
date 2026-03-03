@@ -3,7 +3,7 @@
  * Full settings modal with map layer controls
  */
 import { useState, useEffect, useRef } from 'react';
-import { calculateGridSquare } from '../utils/geo.js';
+import { calculateGridSquare, parseGridSquare } from '../utils/geo.js';
 import { useTranslation, Trans } from 'react-i18next';
 import { LANGUAGES } from '../lang/i18n.js';
 import {
@@ -33,6 +33,7 @@ export const SettingsPanel = ({
   satelliteFilters,
   onSatelliteFiltersChange,
   mapLayers,
+  onToggleDeDxMarkers,
   onToggleDXNews,
   wakeLockStatus,
 }) => {
@@ -52,7 +53,9 @@ export const SettingsPanel = ({
   );
   const [lowMemoryMode, setLowMemoryMode] = useState(config?.lowMemoryMode || false);
   const [preventSleep, setPreventSleep] = useState(config?.preventSleep || false);
-  const [units, setUnits] = useState(config?.units || 'imperial');
+  const [distUnits, setDistUnits] = useState(config?.allUnits?.dist || config?.units || 'imperial');
+  const [tempUnits, setTempUnits] = useState(config?.allUnits?.temp || config?.units || 'imperial');
+  const [pressUnits, setPressUnits] = useState(config?.allUnits?.press || config?.units || 'imperial');
   const [propMode, setPropMode] = useState(config?.propagation?.mode || 'SSB');
   const [propPower, setPropPower] = useState(config?.propagation?.power || 100);
   const [rigEnabled, setRigEnabled] = useState(config?.rigControl?.enabled || false);
@@ -132,6 +135,19 @@ export const SettingsPanel = ({
     setActiveProfileName(getActiveProfile());
   };
 
+  const toggleUnitType = (t) => {
+    return t == 'imperial' ? 'metric' : 'imperial';
+  };
+  const toggleDistUnits = () => {
+    setDistUnits(toggleUnitType(distUnits));
+  };
+  const toggleTempUnits = () => {
+    setTempUnits(toggleUnitType(tempUnits));
+  };
+  const togglePressUnits = () => {
+    setPressUnits(toggleUnitType(pressUnits));
+  };
+
   useEffect(() => {
     if (config) {
       setCallsign(config.callsign || '');
@@ -145,8 +161,9 @@ export const SettingsPanel = ({
       setCustomDxCluster(config.customDxCluster || { enabled: false, host: '', port: 7300 });
       setLowMemoryMode(config.lowMemoryMode || false);
       setPreventSleep(config.preventSleep || false);
-      setUnits(config.units || 'imperial');
-      setPropMode(config.propagation?.mode || 'SSB');
+      setDistUnits(config.allUnits?.dist || config.units || 'imperial');
+      setTempUnits(config.allUnits?.temp || config.units || 'imperial');
+      setPressUnits(config.allUnits?.press || config.units || 'imperial');
       setPropMode(config.propagation?.mode || 'SSB');
       setPropPower(config.propagation?.power || 100);
       setRigEnabled(config.rigControl?.enabled || false);
@@ -270,28 +287,6 @@ export const SettingsPanel = ({
     }
   };
 
-  const parseGridSquare = (grid) => {
-    grid = grid.toUpperCase();
-    if (grid.length < 4) return null;
-
-    const lon1 = (grid.charCodeAt(0) - 65) * 20 - 180;
-    const lat1 = (grid.charCodeAt(1) - 65) * 10 - 90;
-    const lon2 = parseInt(grid[2]) * 2;
-    const lat2 = parseInt(grid[3]) * 1;
-
-    let lon = lon1 + lon2 + 1;
-    let lat = lat1 + lat2 + 0.5;
-
-    if (grid.length >= 6) {
-      const lon3 = (grid.charCodeAt(4) - 65) * (2 / 24);
-      const lat3 = (grid.charCodeAt(5) - 65) * (1 / 24);
-      lon = lon1 + lon2 + lon3 + 1 / 24;
-      lat = lat1 + lat2 + lat3 + 1 / 48;
-    }
-
-    return { lat, lon };
-  };
-
   useEffect(() => {
     if (lat && lon) {
       setGridSquare(calculateGridSquare(lat, lon));
@@ -377,7 +372,8 @@ export const SettingsPanel = ({
       customDxCluster,
       lowMemoryMode,
       preventSleep,
-      units,
+      // units,
+      allUnits: { dist: distUnits, temp: tempUnits, press: pressUnits },
       propagation: { mode: propMode, power: parseFloat(propPower) || 100 },
 
       rigControl: {
@@ -404,7 +400,9 @@ export const SettingsPanel = ({
     compact: t('station.settings.layout.compact.describe'),
     dockable: t('station.settings.layout.dockable.describe'),
   };
-
+  const unitString = (t) => {
+    return t == 'imperial' ? '🇺🇸 Imperial' : '🌍 Metric';
+  };
   return (
     <div
       style={{
@@ -957,7 +955,7 @@ export const SettingsPanel = ({
               </div>
             </div>
 
-            {/* Distance Units */}
+            {/* Units (Distance, Temperature and Pressure ) */}
             <div style={{ marginBottom: '20px' }}>
               <label
                 style={{
@@ -969,46 +967,57 @@ export const SettingsPanel = ({
                   letterSpacing: '1px',
                 }}
               >
-                📏 Distance Units
+                📏 Units
               </label>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
-                  onClick={() => setUnits('imperial')}
+                  onClick={() => toggleDistUnits()}
                   style={{
                     flex: 1,
                     padding: '10px',
-                    background: units === 'imperial' ? 'var(--accent-amber)' : 'var(--bg-tertiary)',
-                    border: `1px solid ${units === 'imperial' ? 'var(--accent-amber)' : 'var(--border-color)'}`,
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
                     borderRadius: '6px',
-                    color: units === 'imperial' ? '#000' : 'var(--text-secondary)',
+                    color: 'var(--accent-green)',
                     fontSize: '13px',
                     cursor: 'pointer',
-                    fontWeight: units === 'imperial' ? '600' : '400',
+                    fontWeight: '600',
                   }}
                 >
-                  🇺🇸 Imperial (mi)
+                  {`distance: ${unitString(distUnits)}`}
                 </button>
                 <button
-                  onClick={() => setUnits('metric')}
+                  onClick={() => toggleTempUnits()}
                   style={{
                     flex: 1,
                     padding: '10px',
-                    background: units === 'metric' ? 'var(--accent-amber)' : 'var(--bg-tertiary)',
-                    border: `1px solid ${units === 'metric' ? 'var(--accent-amber)' : 'var(--border-color)'}`,
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
                     borderRadius: '6px',
-                    color: units === 'metric' ? '#000' : 'var(--text-secondary)',
+                    color: 'var(--accent-green)',
                     fontSize: '13px',
                     cursor: 'pointer',
-                    fontWeight: units === 'metric' ? '600' : '400',
+                    fontWeight: '600',
                   }}
                 >
-                  🌍 Metric (km)
+                  {`Temperature: ${unitString(tempUnits)}`}
                 </button>
-              </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                {units === 'imperial'
-                  ? 'Distances shown in miles throughout the application.'
-                  : 'Distances shown in kilometers throughout the application.'}
+                <button
+                  onClick={() => togglePressUnits()}
+                  style={{
+                    flex: 1,
+                    padding: '10px',
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '6px',
+                    color: 'var(--accent-green)',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                  }}
+                >
+                  {`Pressure: ${unitString(pressUnits)}`}
+                </button>
               </div>
             </div>
 
@@ -2287,71 +2296,34 @@ export const SettingsPanel = ({
         {/* Map Layers Tab */}
         {activeTab === 'layers' && (
           <div>
-            {/* Map Overlays section */}
-            <div
-              style={{
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                padding: '14px',
-                marginBottom: '16px',
-              }}
-            >
-              <div
-                style={{
-                  fontSize: '11px',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  color: 'var(--text-muted)',
-                  marginBottom: '10px',
-                }}
-              >
-                Map Overlays
-              </div>
-
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={mapLayers?.showDXNews !== false}
-                  onChange={() => onToggleDXNews?.()}
-                  style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '18px' }}>📰</span>
-                <div>
-                  <div
-                    style={{
-                      color: mapLayers?.showDXNews !== false ? 'var(--accent-amber)' : 'var(--text-primary)',
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      fontFamily: 'JetBrains Mono, monospace',
-                    }}
-                  >
-                    DX News Ticker
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    Scrolling DX news headlines on the map
-                  </div>
-                </div>
-              </label>
-            </div>
-
-            {layers.length > 0 ? (
-              (() => {
+            {(() => {
+              const overlayCards = [
+                {
+                  id: 'de-dx-markers',
+                  checked: mapLayers?.showDeDxMarkers !== false,
+                  onChange: () => onToggleDeDxMarkers?.(),
+                  icon: '📍',
+                  title: 'DE/DX Markers',
+                  description: 'Show or hide your DE and DX position markers on the map',
+                },
+                {
+                  id: 'dx-news-ticker',
+                  checked: mapLayers?.showDXNews !== false,
+                  onChange: () => onToggleDXNews?.(),
+                  icon: '📰',
+                  title: 'DX News Ticker',
+                  description: 'Scrolling DX news headlines on the map',
+                },
+              ];
+              return (() => {
                 const categoryOrder = [
+                  { key: 'overlay', label: '🗺️ Map Overlays' },
                   { key: 'propagation', label: '📡 Propagation' },
                   { key: 'amateur', label: '📻 Amateur Radio' },
                   { key: 'weather', label: '🌤️ Weather' },
                   { key: 'space-weather', label: '☀️ Space Weather' },
                   { key: 'hazards', label: '⚠️ Natural Hazards' },
                   { key: 'geology', label: '🌍 Geology' },
-                  { key: 'overlay', label: '🗺️ Map Overlays' },
                 ];
 
                 const nonSatLayers = layers.filter((l) => l.category !== 'satellites');
@@ -2367,6 +2339,44 @@ export const SettingsPanel = ({
                     const nameB = (b.name.startsWith('plugins.') ? t(b.name) : b.name).toLowerCase();
                     return nameA.localeCompare(nameB);
                   }),
+                );
+
+                const renderBuiltInOverlayCard = (item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      background: 'var(--bg-tertiary)',
+                      border: `1px solid ${item.checked ? 'var(--accent-amber)' : 'var(--border-color)'}`,
+                      borderRadius: '8px',
+                      padding: '14px',
+                      marginBottom: '12px',
+                    }}
+                  >
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={item.checked}
+                        onChange={item.onChange}
+                        style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '18px' }}>{item.icon}</span>
+                      <div>
+                        <div
+                          style={{
+                            color: item.checked ? 'var(--accent-amber)' : 'var(--text-primary)',
+                            fontSize: '14px',
+                            fontWeight: '600',
+                            fontFamily: 'JetBrains Mono, monospace',
+                          }}
+                        >
+                          {item.title}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {item.description}
+                        </div>
+                      </div>
+                    </label>
+                  </div>
                 );
 
                 const renderLayerCard = (layer) => (
@@ -2469,7 +2479,9 @@ export const SettingsPanel = ({
                 const result = [];
                 const rendered = new Set();
                 categoryOrder.forEach(({ key, label }) => {
-                  if (!grouped[key] || grouped[key].length === 0) return;
+                  const hasBuiltInOverlays = key === 'overlay' && overlayCards.length > 0;
+                  if (!grouped[key] && !hasBuiltInOverlays) return;
+                  if ((!grouped[key] || grouped[key].length === 0) && !hasBuiltInOverlays) return;
                   result.push(
                     <div
                       key={`cat-${key}`}
@@ -2487,6 +2499,11 @@ export const SettingsPanel = ({
                       {label}
                     </div>,
                   );
+                  if (key === 'overlay') {
+                    overlayCards.forEach((item) => {
+                      result.push(renderBuiltInOverlayCard(item));
+                    });
+                  }
                   (grouped[key] || []).forEach((layer) => {
                     result.push(renderLayerCard(layer));
                     rendered.add(layer.id);
@@ -2498,20 +2515,23 @@ export const SettingsPanel = ({
                   .forEach((layer) => {
                     result.push(renderLayerCard(layer));
                   });
+                if (result.length === 0) {
+                  return (
+                    <div
+                      style={{
+                        textAlign: 'center',
+                        padding: '40px 20px',
+                        color: 'var(--text-muted)',
+                        fontSize: '13px',
+                      }}
+                    >
+                      {t('station.settings.layers.noLayers')}
+                    </div>
+                  );
+                }
                 return result;
-              })()
-            ) : (
-              <div
-                style={{
-                  textAlign: 'center',
-                  padding: '40px 20px',
-                  color: 'var(--text-muted)',
-                  fontSize: '13px',
-                }}
-              >
-                {t('station.settings.layers.noLayers')}
-              </div>
-            )}
+              })();
+            })()}
           </div>
         )}
 

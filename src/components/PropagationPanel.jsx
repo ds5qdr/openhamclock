@@ -2,17 +2,21 @@
  * PropagationPanel Component (VOACAP)
  * Toggleable between heatmap chart, bar chart, and band conditions view
  */
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatDistance } from '../utils/geo.js';
+import BandHealthPanel from './BandHealthPanel.jsx';
+import useAutoRotate from '../hooks/app/useAutoRotate.js';
 
 export const PropagationPanel = ({
   propagation,
   loading,
   bandConditions,
   forcedMode,
-  units = 'imperial',
+  allUnits = { dist: 'imperial', temp: 'imperial', press: 'imperial' },
   propConfig = {},
+  dxSpots,
+  clusterFilters,
 }) => {
   const { t } = useTranslation();
   // Load view mode preference from localStorage
@@ -50,15 +54,20 @@ export const PropagationPanel = ({
   };
 
   // Cycle through view modes
-  const cycleViewMode = () => {
-    const modes = ['chart', 'bars', 'bands'];
-    const currentIdx = modes.indexOf(viewMode);
-    const newMode = modes[(currentIdx + 1) % modes.length];
-    setViewMode(newMode);
-    try {
-      localStorage.setItem('openhamclock_voacapViewMode', newMode);
-    } catch (e) {}
-  };
+  const modes = ['chart', 'bars', 'bands', 'health'];
+  const cycleViewMode = useCallback(() => {
+    setViewMode((prev) => {
+      const currentIdx = modes.indexOf(prev);
+      const newMode = modes[(currentIdx + 1) % modes.length];
+      try {
+        localStorage.setItem('openhamclock_voacapViewMode', newMode);
+      } catch (e) {}
+      return newMode;
+    });
+  }, []);
+
+  // Auto-rotate through views on a timer
+  const rotate = useAutoRotate('propPanel', { onTick: cycleViewMode, itemCount: modes.length });
 
   const getBandStyle = (condition) =>
     ({
@@ -154,6 +163,7 @@ export const PropagationPanel = ({
     chart: t('propagation.view.chart'),
     bars: t('propagation.view.bars'),
     bands: t('propagation.view.bands'),
+    health: 'Band Health',
   };
 
   return (
@@ -164,20 +174,68 @@ export const PropagationPanel = ({
     >
       <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span>
-          {viewMode === 'bands' ? t('band.conditions') : '⌇ VOACAP'}
-          {hasRealData && viewMode !== 'bands' && (
+          {viewMode === 'bands' ? t('band.conditions') : viewMode === 'health' ? '📶 Band Health' : '⌇ VOACAP'}
+          {hasRealData && viewMode !== 'bands' && viewMode !== 'health' && (
             <span style={{ color: '#00ff88', fontSize: '10px', marginLeft: '4px' }}>●</span>
           )}
         </span>
-        {!forcedMode && (
-          <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
-            {viewModeLabels[viewMode]} • {t('propagation.view.toggle')}
-          </span>
-        )}
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {!forcedMode && (
+            <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+              {viewModeLabels[viewMode]} • {t('propagation.view.toggle')}
+            </span>
+          )}
+          {/* Auto-rotate controls */}
+          {!forcedMode && (
+            <span
+              onClick={(e) => e.stopPropagation()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', cursor: 'default' }}
+            >
+              {rotate.enabled && (
+                <select
+                  value={rotate.interval}
+                  onChange={(e) => rotate.setInterval(e.target.value)}
+                  style={{
+                    fontSize: '9px',
+                    padding: '1px 2px',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--accent-amber)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '3px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                    width: '42px',
+                  }}
+                >
+                  {rotate.INTERVAL_OPTIONS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}s
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={rotate.toggle}
+                title={rotate.enabled ? 'Stop auto-rotate' : 'Auto-rotate views'}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  padding: '0 2px',
+                  color: rotate.enabled ? 'var(--accent-amber)' : 'var(--text-muted)',
+                  lineHeight: 1,
+                }}
+              >
+                {rotate.enabled ? '⏸' : '▶'}
+              </button>
+            </span>
+          )}
+        </span>
       </div>
 
       {/* Mode & Power indicator */}
-      {(propConfig.mode || propConfig.power) && viewMode !== 'bands' && (
+      {(propConfig.mode || propConfig.power) && viewMode !== 'bands' && viewMode !== 'health' && (
         <div
           style={{
             display: 'flex',
@@ -348,6 +406,11 @@ export const PropagationPanel = ({
             {bandConditions?.extras?.updated && ` • ${bandConditions.extras.updated}`}
           </div>
         </div>
+      ) : viewMode === 'health' ? (
+        /* Band Health View - Real-time DX cluster spot analysis */
+        <div onClick={(e) => e.stopPropagation()} style={{ cursor: 'default' }}>
+          <BandHealthPanel dxSpots={dxSpots} clusterFilters={clusterFilters} embedded />
+        </div>
       ) : (
         <>
           {/* MUF/LUF and Data Source Info */}
@@ -376,7 +439,7 @@ export const PropagationPanel = ({
             </div>
             <span style={{ color: hasRealData ? '#00ff88' : 'var(--text-muted)', fontSize: '10px' }}>
               {hasRealData
-                ? `⌇ Iono: ${ionospheric?.source || 'ionosonde'}${ionospheric?.distance ? ` (${formatDistance(ionospheric.distance, units)} from path)` : ''}`
+                ? `⌇ Iono: ${ionospheric?.source || 'ionosonde'}${ionospheric?.distance ? ` (${formatDistance(ionospheric.distance, allUnits.dist)} from path)` : ''}`
                 : `⚡ ${t('propagation.estimated')}`}
             </span>
             {dataSource && dataSource.includes('ITU') && (
@@ -508,7 +571,7 @@ export const PropagationPanel = ({
                   </span>
                 </div>
                 <div style={{ color: 'var(--text-muted)' }}>
-                  {formatDistance(distance || 0, units)} •{' '}
+                  {formatDistance(distance || 0, allUnits.dist)} •{' '}
                   {ionospheric?.foF2 ? `foF2=${ionospheric.foF2}` : `SSN=${solarData?.ssn}`}
                 </div>
               </div>

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         APRS Newsfeed (Inbox) for OpenHamClock
 // @namespace    http://tampermonkey.net/
-// @version      1.7
-// @description  Fetches and displays your latest APRS messages from aprs.fi
+// @version      1.8
+// @description  Fetches and displays your latest APRS messages (Inbox & Outbox) from aprs.fi
 // @author       DO3EET
 // @match        https://openhamclock.com/*
 // @grant        GM_xmlhttpRequest
@@ -80,7 +80,7 @@
   const styles = `
         #ohc-addon-drawer {
             position: fixed;
-            bottom: 20px;
+            top: 100px;
             right: 20px;
             display: flex;
             flex-direction: row-reverse;
@@ -88,6 +88,7 @@
             gap: 10px;
             z-index: 10000;
             pointer-events: none;
+            user-select: none;
         }
         #ohc-addon-drawer.ohc-vertical {
             flex-direction: column-reverse;
@@ -110,7 +111,7 @@
             transition: all 0.3s ease;
         }
         .ohc-addon-icon:hover { border-color: var(--accent-amber, #ffb432); transform: scale(1.1); }
-        #ohc-addon-launcher { background: var(--bg-tertiary, #1a2332); color: var(--accent-amber); }
+        #ohc-addon-launcher { background: var(--bg-tertiary, #1a2332); color: var(--accent-amber); cursor: move; }
         .ohc-addon-item { display: none; }
 
         #aprs-news-container {
@@ -156,7 +157,7 @@
 
   let callsign = 'N0CALL';
   let apiKey = localStorage.getItem(STORAGE_API_KEY) || '';
-  let lastMsgId = localStorage.getItem('ohc_aprs_last_msgid') || '0';
+  let lastUpdateTs = parseInt(localStorage.getItem('ohc_aprs_last_update')) || 0;
 
   function getCallsign() {
     try {
@@ -179,27 +180,189 @@
     if (!drawer) {
       drawer = document.createElement('div');
       drawer.id = 'ohc-addon-drawer';
+
+      const updateLayout = () => {
+        if (!drawer) return;
+        const rect = drawer.getBoundingClientRect();
+        const winW = window.innerWidth;
+        const winH = window.innerHeight;
+
+        const isRight = rect.left + rect.width / 2 > winW / 2;
+        const isBottom = rect.top + rect.height / 2 > winH / 2;
+        const isVert = drawer.classList.contains('ohc-vertical');
+
+        if (isVert) {
+          drawer.style.flexDirection = isBottom ? 'column-reverse' : 'column';
+        } else {
+          drawer.style.flexDirection = isRight ? 'row-reverse' : 'row';
+        }
+      };
+
       const savedLayout = localStorage.getItem('ohc_addon_layout') || 'horizontal';
       if (savedLayout === 'vertical') drawer.classList.add('ohc-vertical');
+
+      const savedPos = JSON.parse(localStorage.getItem('ohc_addon_pos') || '{}');
+      if (savedPos.top) drawer.style.top = savedPos.top;
+      if (savedPos.bottom) drawer.style.bottom = savedPos.bottom;
+      if (savedPos.left) drawer.style.left = savedPos.left;
+      if (savedPos.right) drawer.style.right = savedPos.right;
+
+      if (!savedPos.top && !savedPos.bottom) {
+        drawer.style.top = '100px';
+        drawer.style.right = '20px';
+      }
 
       const launcher = document.createElement('div');
       launcher.id = 'ohc-addon-launcher';
       launcher.className = 'ohc-addon-icon';
       launcher.innerHTML = '\uD83E\uDDE9';
-      launcher.title = 'L: Toggle | R: Rotate';
+      launcher.title = 'L: Toggle | M: Drag | R: Rotate';
+
+      let isDragging = false;
+      let dragTimer = null;
+      let wasDragged = false;
+      let startX, startY, startTop, startLeft;
+
       launcher.onclick = () => {
+        if (wasDragged) {
+          wasDragged = false;
+          return;
+        }
         const items = document.querySelectorAll('.ohc-addon-item');
-        const isHidden = items[0]?.style.display !== 'flex';
+        const isHidden = Array.from(items).some((el) => el.style.display !== 'flex');
         items.forEach((el) => (el.style.display = isHidden ? 'flex' : 'none'));
         launcher.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
+        updateLayout();
       };
+
       launcher.oncontextmenu = (e) => {
         e.preventDefault();
-        const isVert = drawer.classList.toggle('ohc-vertical');
-        localStorage.setItem('ohc_addon_layout', isVert ? 'vertical' : 'horizontal');
+        drawer.classList.toggle('ohc-vertical');
+        localStorage.setItem('ohc_addon_layout', drawer.classList.contains('ohc-vertical') ? 'vertical' : 'horizontal');
+        updateLayout();
       };
+
+      const startDrag = (x, y) => {
+        isDragging = true;
+        wasDragged = true;
+        startX = x;
+        startY = y;
+        const rect = drawer.getBoundingClientRect();
+        startTop = rect.top;
+        startLeft = rect.left;
+        launcher.style.cursor = 'grabbing';
+      };
+
+      const handleMove = (x, y) => {
+        if (!isDragging) return;
+        const dx = x - startX;
+        const dy = y - startY;
+        drawer.style.top = startTop + dy + 'px';
+        drawer.style.left = startLeft + dx + 'px';
+        drawer.style.right = 'auto';
+        drawer.style.bottom = 'auto';
+      };
+
+      const stopDrag = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        launcher.style.cursor = 'move';
+
+        const rect = drawer.getBoundingClientRect();
+        const winW = window.innerWidth;
+        const winH = window.innerHeight;
+        const isRight = rect.left + rect.width / 2 > winW / 2;
+        const isBottom = rect.top + rect.height / 2 > winH / 2;
+
+        const pos = {};
+        if (isRight) {
+          drawer.style.left = 'auto';
+          drawer.style.right = Math.max(0, winW - rect.right) + 'px';
+          pos.right = drawer.style.right;
+        } else {
+          drawer.style.right = 'auto';
+          drawer.style.left = Math.max(0, rect.left) + 'px';
+          pos.left = drawer.style.left;
+        }
+
+        if (isBottom) {
+          drawer.style.top = 'auto';
+          drawer.style.bottom = Math.max(0, winH - rect.bottom) + 'px';
+          pos.bottom = drawer.style.bottom;
+        } else {
+          drawer.style.bottom = 'auto';
+          drawer.style.top = Math.max(0, rect.top) + 'px';
+          pos.top = drawer.style.top;
+        }
+
+        localStorage.setItem('ohc_addon_pos', JSON.stringify(pos));
+        updateLayout();
+      };
+
+      launcher.onmousedown = (e) => {
+        if (e.button === 1) {
+          e.preventDefault();
+          startDrag(e.clientX, e.clientY);
+        } else if (e.button === 0) {
+          startX = e.clientX;
+          startY = e.clientY;
+          dragTimer = setTimeout(() => startDrag(e.clientX, e.clientY), 500);
+        }
+      };
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isDragging && dragTimer) {
+          if (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5) {
+            clearTimeout(dragTimer);
+            dragTimer = null;
+          }
+        }
+        handleMove(e.clientX, e.clientY);
+      });
+
+      document.addEventListener('mouseup', () => {
+        clearTimeout(dragTimer);
+        dragTimer = null;
+        stopDrag();
+      });
+
+      launcher.ontouchstart = (e) => {
+        const touch = e.touches[0];
+        startX = touch.clientX;
+        startY = touch.clientY;
+        dragTimer = setTimeout(() => {
+          startDrag(touch.clientX, touch.clientY);
+          if (window.navigator.vibrate) window.navigator.vibrate(20);
+        }, 500);
+      };
+
+      document.addEventListener(
+        'touchmove',
+        (e) => {
+          const touch = e.touches[0];
+          if (!isDragging && dragTimer) {
+            if (Math.abs(touch.clientX - startX) > 5 || Math.abs(touch.clientY - startY) > 5) {
+              clearTimeout(dragTimer);
+              dragTimer = null;
+            }
+          }
+          if (isDragging) {
+            e.preventDefault();
+            handleMove(touch.clientX, touch.clientY);
+          }
+        },
+        { passive: false },
+      );
+
+      document.addEventListener('touchend', () => {
+        clearTimeout(dragTimer);
+        dragTimer = null;
+        stopDrag();
+      });
+
       drawer.appendChild(launcher);
       document.body.appendChild(drawer);
+      setTimeout(updateLayout, 100);
     }
 
     const toggleBtn = document.createElement('div');
@@ -298,35 +461,76 @@
     }
     const status = document.getElementById('aprs-status');
     status.innerText = 'Loading...';
-    let queryCalls = baseCall;
-    if (!baseCall.includes('-'))
-      queryCalls = `${baseCall},${baseCall}-7,${baseCall}-9,${baseCall}-10,${baseCall}-1,${baseCall}-2`;
-    const url = `https://api.aprs.fi/api/get?what=msg&dst=${queryCalls}&apikey=${apiKey}&format=json`;
 
-    if (typeof GM_xmlhttpRequest !== 'undefined') {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: url,
-        onload: (response) => {
-          try {
-            handleResponse(JSON.parse(response.responseText));
-          } catch (e) {
-            status.innerText = 'Parse Error';
+    let queryCalls = baseCall;
+    if (!baseCall.includes('-')) {
+      queryCalls = `${baseCall},${baseCall}-1,${baseCall}-2,${baseCall}-5,${baseCall}-7,${baseCall}-9,${baseCall}-10,${baseCall}-11,${baseCall}-13,${baseCall}-15`;
+    }
+
+    const baseUrl = `https://api.aprs.fi/api/get?apikey=${apiKey}&format=json`;
+    const urlIn = `${baseUrl}&what=msg&dst=${queryCalls}`;
+    const urlOut = `${baseUrl}&what=msg&src=${queryCalls}`;
+    const urlLoc = `${baseUrl}&what=loc&name=${queryCalls}`;
+
+    try {
+      const results = await Promise.all([
+        new Promise((r) => {
+          if (typeof GM_xmlhttpRequest !== 'undefined') {
+            GM_xmlhttpRequest({ method: 'GET', url: urlIn, onload: (res) => r(JSON.parse(res.responseText)) });
+          } else {
+            fetch(urlIn)
+              .then((res) => res.json())
+              .then(r);
           }
-        },
-        onerror: () => {
-          status.innerText = t('error_api');
-        },
-      });
-    } else {
-      try {
-        const response = await fetch(url);
-        handleResponse(await response.json());
-      } catch (e) {
-        document.getElementById('aprs-news-content').innerHTML =
-          `<div style="padding: 20px; text-align: center; color: var(--accent-red);">CORS Error. Use Tampermonkey/Greasemonkey!</div>`;
-        status.innerText = 'CORS Error';
+        }),
+        new Promise((r) => {
+          if (typeof GM_xmlhttpRequest !== 'undefined') {
+            GM_xmlhttpRequest({ method: 'GET', url: urlOut, onload: (res) => r(JSON.parse(res.responseText)) });
+          } else {
+            fetch(urlOut)
+              .then((res) => res.json())
+              .then(r);
+          }
+        }),
+        new Promise((r) => {
+          if (typeof GM_xmlhttpRequest !== 'undefined') {
+            GM_xmlhttpRequest({ method: 'GET', url: urlLoc, onload: (res) => r(JSON.parse(res.responseText)) });
+          } else {
+            fetch(urlLoc)
+              .then((res) => res.json())
+              .then(r);
+          }
+        }),
+      ]);
+
+      let allEntries = [];
+      if (results[0].result === 'ok') allEntries.push(...(results[0].entries || []));
+      if (results[1].result === 'ok')
+        allEntries.push(...(results[1].entries || []).map((e) => ({ ...e, isOut: true })));
+      if (results[2].result === 'ok') {
+        const locs = (results[2].entries || [])
+          .filter((e) => e.comment)
+          .map((e) => ({
+            srccall: e.name,
+            dst: 'STATUS',
+            message: e.comment,
+            time: e.lasttime,
+            isStatus: true,
+          }));
+        allEntries.push(...locs);
       }
+
+      const seen = new Set();
+      allEntries = allEntries.filter((e) => {
+        const id = e.messageid ? `m-${e.messageid}` : `s-${e.srccall}-${e.time}`;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+
+      handleResponse({ result: 'ok', entries: allEntries });
+    } catch (e) {
+      status.innerText = 'Error';
     }
   }
 
@@ -337,14 +541,14 @@
       renderMessages(sortedEntries);
       status.innerText = `${t('last_update')}: ${new Date().toLocaleTimeString()}`;
       if (sortedEntries.length > 0) {
-        const latest = sortedEntries[0].messageid;
-        if (latest > lastMsgId && document.getElementById('aprs-news-container').style.display !== 'flex') {
+        const newestTs = sortedEntries[0].time;
+        if (newestTs > lastUpdateTs && document.getElementById('aprs-news-container').style.display !== 'flex') {
           const badge = document.getElementById('aprs-news-badge');
           badge.innerText = '!';
           badge.style.display = 'flex';
         }
-        lastMsgId = latest;
-        localStorage.setItem('ohc_aprs_last_msgid', lastMsgId);
+        lastUpdateTs = newestTs;
+        localStorage.setItem('ohc_aprs_last_update', lastUpdateTs);
       }
     } else {
       document.getElementById('aprs-news-content').innerHTML =
@@ -367,11 +571,16 @@
           day: '2-digit',
           month: '2-digit',
         });
-        const isToSSID = entry.dst.includes('-');
+        const isToSSID = entry.dst && entry.dst.includes('-');
+        const tag = entry.isOut
+          ? ' <span style="font-size: 8px; color: var(--accent-amber); border: 1px solid var(--accent-amber); padding: 0 2px; border-radius: 2px; margin-left: 4px;">OUT</span>'
+          : entry.isStatus
+            ? ' <span style="font-size: 8px; color: var(--accent-purple); border: 1px solid var(--accent-purple); padding: 0 2px; border-radius: 2px; margin-left: 4px;">STATUS</span>'
+            : '';
         return `
                 <div class="aprs-msg-entry">
                     <div class="aprs-msg-meta">
-                        <span>${t('from')}: <span class="aprs-msg-call">${entry.srccall}</span></span>
+                        <span><span class="aprs-msg-call">${entry.srccall}</span>${tag}</span>
                         <span>${timeStr}</span>
                     </div>
                     <div class="aprs-msg-text">${entry.message}</div>

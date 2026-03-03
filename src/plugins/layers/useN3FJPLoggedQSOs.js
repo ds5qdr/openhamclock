@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
-import { makeDraggable } from "./makeDraggable.js";
+import { addMinimizeToggle } from './addMinimizeToggle.js';
+import { makeDraggable } from './makeDraggable.js';
 
 export const metadata = {
   id: 'n3fjp_logged_qsos',
@@ -19,89 +20,11 @@ const POLL_MS = 2000;
 const STORAGE_MINUTES_KEY = 'n3fjp_display_minutes';
 const STORAGE_COLOR_KEY = 'n3fjp_line_color';
 
-// Make control draggable with CTRL+drag
-// Registry so a second call for the same storageKey cancels the previous listeners.
-
-// Add minimize/maximize toggle
-function addMinimizeToggle(element, storageKey) {
-  if (!element) return;
-
-  const minimizeKey = storageKey + '-minimized';
-  const header = element.firstElementChild;
-  if (!header) return;
-
-  // Wrap content
-  const content = Array.from(element.children).slice(1);
-  const contentWrapper = document.createElement('div');
-  contentWrapper.className = 'n3fjp-panel-content';
-  content.forEach((child) => contentWrapper.appendChild(child));
-  element.appendChild(contentWrapper);
-
-  // Add minimize button
-  const minimizeBtn = document.createElement('span');
-  minimizeBtn.className = 'n3fjp-minimize-btn';
-  minimizeBtn.innerHTML = '▼';
-  minimizeBtn.style.cssText = `
-    float: right;
-    cursor: pointer;
-    user-select: none;
-    padding: 0 4px;
-    margin: -2px -4px 0 0;
-    font-size: 10px;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-  `;
-  minimizeBtn.title = 'Minimize/Maximize';
-
-  minimizeBtn.addEventListener('mouseenter', () => {
-    minimizeBtn.style.opacity = '1';
-  });
-  minimizeBtn.addEventListener('mouseleave', () => {
-    minimizeBtn.style.opacity = '0.7';
-  });
-
-  header.style.display = 'flex';
-  header.style.justifyContent = 'space-between';
-  header.style.alignItems = 'center';
-  header.appendChild(minimizeBtn);
-
-  // Load saved state
-  const isMinimized = localStorage.getItem(minimizeKey) === 'true';
-  if (isMinimized) {
-    contentWrapper.style.display = 'none';
-    minimizeBtn.innerHTML = '▶';
-    element.style.cursor = 'pointer';
-  }
-
-  // Toggle function
-  const toggle = (e) => {
-    if (e && e.ctrlKey) return;
-
-    const isCurrentlyMinimized = contentWrapper.style.display === 'none';
-
-    if (isCurrentlyMinimized) {
-      contentWrapper.style.display = 'block';
-      minimizeBtn.innerHTML = '▼';
-      element.style.cursor = 'default';
-      localStorage.setItem(minimizeKey, 'false');
-    } else {
-      contentWrapper.style.display = 'none';
-      minimizeBtn.innerHTML = '▶';
-      element.style.cursor = 'pointer';
-      localStorage.setItem(minimizeKey, 'true');
-    }
-  };
-
-  minimizeBtn.addEventListener('click', toggle);
-  header.addEventListener('click', (e) => {
-    if (e.target !== minimizeBtn) toggle(e);
-  });
-}
-
 export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
   const [layersRef, setLayersRef] = useState([]);
   const [qsos, setQsos] = useState([]);
   const [retentionMinutes, setRetentionMinutes] = useState(15);
+  const controlRef = useRef(null);
 
   const lastOpenDxCallRef = useRef(null);
   const suppressReopenRef = useRef(false);
@@ -143,6 +66,96 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
       clearInterval(interval);
     };
   }, [enabled]);
+
+  useEffect(() => {
+    if (!map || typeof L === 'undefined') return;
+
+    if (controlRef.current) {
+      try {
+        map.removeControl(controlRef.current);
+      } catch {}
+      controlRef.current = null;
+    }
+
+    if (!enabled) return;
+
+    const Control = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd() {
+        const div = L.DomUtil.create('div', 'n3fjp-control');
+        div.style.cssText = `
+          background: var(--bg-panel);
+          padding: 10px;
+          border-radius: 8px;
+          border: 1px solid var(--border-color);
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          color: var(--text-primary);
+          min-width: 190px;
+        `;
+        div.innerHTML = `
+          <div style="margin-bottom: 8px;">🗺️ N3FJP Logged QSOs</div>
+          <div id="n3fjp-stats" style="display: grid; gap: 4px;">
+            <div>QSOs: <span style="color: var(--accent-cyan);">${qsos.length}</span></div>
+            <div>Display: <span style="color: var(--accent-amber);">${displayMinutes} min</span></div>
+            <div>Retention: <span style="color: var(--accent-green);">${retentionMinutes} min</span></div>
+            <div>Line: <span style="color: ${lineColor};">${lineColor}</span></div>
+          </div>
+        `;
+
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+        return div;
+      },
+    });
+
+    controlRef.current = new Control();
+    map.addControl(controlRef.current);
+
+    setTimeout(() => {
+      const container = controlRef.current?._container;
+      if (!container) return;
+
+      const saved = localStorage.getItem('n3fjp-position');
+      if (saved) {
+        try {
+          const { top, left } = JSON.parse(saved);
+          container.style.position = 'fixed';
+          container.style.top = top + 'px';
+          container.style.left = left + 'px';
+          container.style.right = 'auto';
+          container.style.bottom = 'auto';
+        } catch {}
+      }
+
+      addMinimizeToggle(container, 'n3fjp-position', {
+        contentClassName: 'n3fjp-panel-content',
+        buttonClassName: 'n3fjp-minimize-btn',
+      });
+      makeDraggable(container, 'n3fjp-position');
+    }, 150);
+
+    return () => {
+      if (controlRef.current) {
+        try {
+          map.removeControl(controlRef.current);
+        } catch {}
+        controlRef.current = null;
+      }
+    };
+  }, [enabled, map]);
+
+  useEffect(() => {
+    const statsEl = document.getElementById('n3fjp-stats');
+    if (!statsEl || !enabled) return;
+
+    statsEl.innerHTML = `
+      <div>QSOs: <span style="color: var(--accent-cyan);">${qsos.length}</span></div>
+      <div>Display: <span style="color: var(--accent-amber);">${displayMinutes} min</span></div>
+      <div>Retention: <span style="color: var(--accent-green);">${retentionMinutes} min</span></div>
+      <div>Line: <span style="color: ${lineColor};">${lineColor}</span></div>
+    `;
+  }, [enabled, qsos.length, displayMinutes, retentionMinutes, lineColor]);
 
   /// React to Integrations panel changes (display window + color)
   useEffect(() => {
@@ -280,7 +293,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
         `<div style="font-family: JetBrains Mono, monospace;">
           <b>${dxCall}</b><br/>
           ${mode ? `Mode: ${mode}<br/>` : ''}
-          ${freqMhz ? `Freq: ${freqMhz} MHz<br/>` : ''} 
+          ${freqMhz ? `Freq: ${freqMhz} MHz<br/>` : ''}
           ${ts ? `Time: ${ts}<br/>` : ''}
           ${q.dx_country ? `Country: ${q.dx_country}<br/>` : ''}
           ${q.loc_source ? `Loc: ${q.loc_source}<br/>` : ''}

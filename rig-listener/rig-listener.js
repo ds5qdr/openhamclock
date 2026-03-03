@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 /**
- * OpenHamClock Rig Listener v1.0.0
+ * OpenHamClock Rig Listener v1.1.0
  *
  * A single, self-contained bridge between your radio and OpenHamClock.
- * Talks directly to your radio via USB/serial — no flrig, no rigctld needed.
+ * Talks directly to your radio via USB/serial or TCI WebSocket —
+ * no flrig, no rigctld needed.
  *
  * Distributed as a standalone executable — no Node.js installation required.
  *
  * Supported radios:
- *   • Yaesu  (FT-991A, FT-891, FT-710, FT-DX10, FT-DX101, FT-450, FT-817/818, etc.)
+ *   • Yaesu    (FT-991A, FT-891, FT-710, FT-DX10, FT-DX101, FT-450, FT-817/818, etc.)
  *   • Kenwood / Elecraft  (TS-590, TS-890, K3, K4, KX3, KX2, etc.)
- *   • Icom  (IC-7300, IC-7610, IC-705, IC-9700, etc.)
+ *   • Icom    (IC-7300, IC-7610, IC-705, IC-9700, etc.)
+ *   • TCI/SDR (Thetis/HL2, ANAN, SunSDR, ExpertSDR — via TCI WebSocket)
  *
  * Usage:
  *   ./rig-listener                     (interactive wizard on first run)
  *   ./rig-listener --port COM3         (quick start with port override)
+ *   ./rig-listener --tci               (connect to TCI on localhost:40001)
  *   ./rig-listener --mock              (simulation mode, no radio needed)
  */
 
@@ -23,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 const HTTP_PORT_DEFAULT = 5555;
 
 // Config lives NEXT TO the executable (or cwd for dev), NOT inside the pkg snapshot
@@ -332,9 +335,175 @@ const MockProtocol = {
 };
 
 // ============================================
+// TCI PROTOCOL (WebSocket — Thetis/HL2, SunSDR, ExpertSDR)
+// https://github.com/ExpertSDR3/TCI
+//
+// TCI is a WebSocket-based transceiver control interface used by
+// modern SDR applications: Thetis (Apache Labs HL2/ANAN),
+// ExpertSDR (SunSDR), and others.  Unlike serial CAT protocols,
+// TCI pushes state changes in real-time — no polling needed.
+//
+// Default endpoint: ws://localhost:40001
+// ============================================
+const TCI_MODES = {
+  am: 'AM',
+  sam: 'SAM',
+  dsb: 'DSB',
+  lsb: 'LSB',
+  usb: 'USB',
+  cw: 'CW',
+  nfm: 'FM',
+  wfm: 'WFM',
+  digl: 'DATA-LSB',
+  digu: 'DATA-USB',
+  spec: 'SPEC',
+  drm: 'DRM',
+};
+const TCI_MODES_REV = {
+  LSB: 'lsb',
+  USB: 'usb',
+  CW: 'cw',
+  'CW-R': 'cw',
+  AM: 'am',
+  FM: 'nfm',
+  WFM: 'wfm',
+  'DATA-USB': 'digu',
+  'DATA-LSB': 'digl',
+  'DATA-FM': 'nfm',
+  'RTTY-USB': 'digu',
+  'RTTY-LSB': 'digl',
+  SAM: 'sam',
+  DSB: 'dsb',
+  DRM: 'drm',
+};
+
+const TciProtocol = {
+  buffer: '',
+  trx: 0, // transceiver index (0 = primary)
+  vfo: 0, // VFO index (0 = VFO-A)
+
+  // TCI pushes state — no polling required
+  buildPollCommands() {
+    return [];
+  },
+
+  parseResponse(chunk) {
+    this.buffer += chunk;
+    const messages = [];
+    let idx;
+    while ((idx = this.buffer.indexOf(';')) !== -1) {
+      messages.push(this.buffer.substring(0, idx + 1));
+      this.buffer = this.buffer.substring(idx + 1);
+    }
+    for (const raw of messages) {
+      const msg = raw.replace(/;$/, '');
+      // TCI format: "name:arg1,arg2,..."  or just "name"
+      const colonIdx = msg.indexOf(':');
+      const name = (colonIdx === -1 ? msg : msg.substring(0, colonIdx)).toLowerCase().trim();
+      const argStr = colonIdx === -1 ? '' : msg.substring(colonIdx + 1);
+      const args = argStr ? argStr.split(',').map((s) => s.trim()) : [];
+
+      switch (name) {
+        case 'vfo': {
+          // vfo:rx,sub_vfo,freq_hz;
+          const rx = parseInt(args[0]);
+          const sub = parseInt(args[1]);
+          const freq = parseInt(args[2]);
+          if (rx === this.trx && sub === this.vfo && freq > 0) {
+            updateState('freq', freq);
+          }
+          break;
+        }
+        case 'modulation': {
+          // modulation:rx,mode_name;
+          const rx = parseInt(args[0]);
+          const modeName = (args[1] || '').toLowerCase();
+          if (rx === this.trx && modeName) {
+            updateState('mode', TCI_MODES[modeName] || modeName.toUpperCase());
+          }
+          break;
+        }
+        case 'trx': {
+          // trx:rx,true|false;
+          const rx = parseInt(args[0]);
+          const txOn = (args[1] || '').toLowerCase() === 'true';
+          if (rx === this.trx) {
+            updateState('ptt', txOn);
+          }
+          break;
+        }
+        case 'rx_filter_band': {
+          // rx_filter_band:rx,low_hz,high_hz;
+          const rx = parseInt(args[0]);
+          const lo = parseInt(args[1]);
+          const hi = parseInt(args[2]);
+          if (rx === this.trx && !isNaN(lo) && !isNaN(hi)) {
+            updateState('width', hi - lo);
+          }
+          break;
+        }
+        case 'protocol':
+          console.log(`[TCI] Server protocol: ${argStr}`);
+          break;
+        case 'device':
+          console.log(`[TCI] Device: ${argStr}`);
+          break;
+        case 'receive_only':
+          if ((args[0] || '').toLowerCase() === 'true') {
+            console.log('[TCI] ⚠️  Radio is in receive-only mode (PTT disabled server-side)');
+          }
+          break;
+        case 'ready':
+          console.log('[TCI] Server ready');
+          break;
+        // Silently ignore high-frequency messages we don't need
+        case 'iq_samplerate':
+        case 'audio_samplerate':
+        case 'iq_start':
+        case 'iq_stop':
+        case 'audio_start':
+        case 'audio_stop':
+        case 'spot':
+        case 'drive':
+        case 'tune_drive':
+        case 'sql_enable':
+        case 'sql_level':
+        case 'mute':
+        case 'rx_enable':
+        case 'rx_sensors':
+        case 'tx_sensors':
+        case 'cw_macros_speed':
+        case 'volume':
+        case 'rx_smeter':
+          break;
+        default:
+          // Log unknown commands at debug level
+          // console.log(`[TCI] Unhandled: ${raw}`);
+          break;
+      }
+    }
+  },
+
+  setFreqCmd(hz) {
+    return `VFO:${this.trx},${this.vfo},${Math.round(hz)};`;
+  },
+
+  setModeCmd(mode) {
+    const tciMode = TCI_MODES_REV[mode] || TCI_MODES_REV[mode.toUpperCase()] || mode.toLowerCase();
+    return `MODULATION:${this.trx},${tciMode};`;
+  },
+
+  setPttCmd(on) {
+    return `TRX:${this.trx},${on ? 'true' : 'false'};`;
+  },
+};
+
+// ============================================
 // SERIAL ENGINE
 // ============================================
 let serialPort = null;
+let tciSocket = null;
+let tciReconnectTimer = null;
 let protocol = null;
 let pollTimer = null;
 let config = null;
@@ -348,6 +517,9 @@ async function initSerial(cfg) {
   else if (brand === 'icom') {
     protocol = IcomProtocol;
     IcomProtocol.civAddr = cfg.radio.civAddress || 0x94;
+  } else if (brand === 'tci') {
+    // Shouldn't reach here — main() routes TCI to initTci()
+    return initTci(cfg);
   } else if (brand === 'mock') {
     protocol = MockProtocol;
     state.connected = true;
@@ -464,7 +636,103 @@ function reconnect(cfg) {
   initSerial(cfg);
 }
 
+// ============================================
+// TCI WebSocket ENGINE
+// ============================================
+async function initTci(cfg) {
+  config = cfg;
+  protocol = TciProtocol;
+  TciProtocol.trx = cfg.tci?.trx || 0;
+  TciProtocol.vfo = cfg.tci?.vfo || 0;
+
+  const host = cfg.tci?.host || 'localhost';
+  const port = cfg.tci?.port || 40001;
+  const url = `ws://${host}:${port}`;
+
+  // Resolve WebSocket implementation: prefer 'ws' npm package (works
+  // inside pkg snapshots), fall back to Node 21+ built-in WebSocket.
+  let WS;
+  try {
+    WS = require('ws');
+  } catch {
+    if (typeof globalThis.WebSocket !== 'undefined') {
+      WS = globalThis.WebSocket;
+    } else {
+      console.error('\n  ❌ WebSocket library not available.');
+      console.error('     Run: npm install ws');
+      console.error('     (Node 21+ can also use the built-in WebSocket)\n');
+      process.exit(1);
+    }
+  }
+
+  function connect() {
+    console.log(`[TCI] Connecting to ${url}...`);
+
+    try {
+      tciSocket = new WS(url);
+    } catch (e) {
+      console.error(`[TCI] Connection failed: ${e.message}`);
+      scheduleReconnect();
+      return;
+    }
+
+    tciSocket.on('open', () => {
+      console.log(`[TCI] ✅ Connected to ${url}`);
+      state.connected = true;
+      broadcast({ type: 'update', prop: 'connected', value: true });
+      // Initiate TCI session — server will send device info, then state dump
+      tciSocket.send('start;');
+    });
+
+    tciSocket.on('message', (data) => {
+      // data may be a Buffer (ws lib) or string (built-in)
+      const msg = typeof data === 'string' ? data : data.toString('utf8');
+      protocol.parseResponse(msg);
+    });
+
+    tciSocket.on('error', (err) => {
+      // 'error' fires before 'close' — just log it, reconnect happens on 'close'
+      if (err.code === 'ECONNREFUSED') {
+        console.error(`[TCI] Connection refused — is Thetis/ExpertSDR running with TCI enabled?`);
+      } else {
+        console.error(`[TCI] Error: ${err.message}`);
+      }
+    });
+
+    tciSocket.on('close', () => {
+      console.log('[TCI] Disconnected — reconnecting in 5s...');
+      state.connected = false;
+      broadcast({ type: 'update', prop: 'connected', value: false });
+      tciSocket = null;
+      scheduleReconnect();
+    });
+  }
+
+  function scheduleReconnect() {
+    if (tciReconnectTimer) return;
+    tciReconnectTimer = setTimeout(() => {
+      tciReconnectTimer = null;
+      connect();
+    }, 5000);
+  }
+
+  connect();
+}
+
 function sendToRadio(data) {
+  // TCI transport: send via WebSocket
+  if (tciSocket) {
+    // readyState 1 = OPEN (works for both 'ws' lib and built-in WebSocket)
+    if (tciSocket.readyState !== 1) return false;
+    try {
+      tciSocket.send(typeof data === 'string' ? data : data.toString());
+      return true;
+    } catch (e) {
+      console.error(`[TCI] Send error: ${e.message}`);
+      return false;
+    }
+  }
+  // Serial transport
   if (!serialPort?.isOpen) return false;
   try {
     serialPort.write(data);
@@ -618,73 +886,105 @@ async function runWizard() {
   console.log('  └──────────────────────────────────────────────┘');
   console.log('');
 
-  const ports = await listPorts();
-
-  if (ports.length > 0) {
-    console.log('  📟 Available serial ports:\n');
-    ports.forEach((p, i) => {
-      const mfg = p.manufacturer ? `  —  ${p.manufacturer}` : '';
-      const sn = p.serialNumber ? ` (${p.serialNumber})` : '';
-      console.log(`     ${i + 1}) ${p.path}${mfg}${sn}`);
-    });
-    console.log('');
-  } else {
-    console.log('  ⚠️  No serial ports detected.');
-    console.log('     Make sure your radio is connected via USB.\n');
-  }
-
-  let selectedPort = '';
-  if (ports.length > 0) {
-    const choice = await ask(`  Select port (1-${ports.length}, or type path): `);
-    const idx = parseInt(choice) - 1;
-    selectedPort = idx >= 0 && idx < ports.length ? ports[idx].path : choice.trim();
-  } else {
-    selectedPort = (await ask('  Enter serial port (e.g. COM3 or /dev/ttyUSB0): ')).trim();
-  }
-  if (!selectedPort) {
-    console.log('\n  ❌ No port selected.\n');
-    rl.close();
-    process.exit(1);
-  }
-  console.log(`\n  ✅ Port: ${selectedPort}\n`);
-
-  console.log('  📻 Radio brand:\n');
+  // ── Brand selection (first, so we know whether serial or TCI) ──
+  console.log('  📻 Radio type:\n');
   console.log('     1) Yaesu     (FT-991A, FT-891, FT-710, FT-DX10, FT-817/818)');
   console.log('     2) Kenwood   (TS-590, TS-890, TS-480, TS-2000)');
   console.log('     3) Elecraft  (K3, K4, KX3, KX2)');
   console.log('     4) Icom      (IC-7300, IC-7610, IC-705, IC-9700)');
+  console.log('     5) SDR (TCI) (Thetis/HL2, ANAN, SunSDR, ExpertSDR)');
   console.log('');
-  const brandChoice = (await ask('  Select brand (1-4): ')).trim();
-  const brand = { 1: 'yaesu', 2: 'kenwood', 3: 'elecraft', 4: 'icom' }[brandChoice] || 'yaesu';
-  console.log(`\n  ✅ Brand: ${brand}\n`);
+  const brandChoice = (await ask('  Select radio type (1-5): ')).trim();
+  const brand = { 1: 'yaesu', 2: 'kenwood', 3: 'elecraft', 4: 'icom', 5: 'tci' }[brandChoice] || 'yaesu';
+  console.log(`\n  ✅ Type: ${brand.toUpperCase()}\n`);
 
-  const model = (await ask('  Radio model (optional, e.g. FT-991A): ')).trim();
+  const model = (await ask('  Radio model (optional, e.g. FT-991A or HL2): ')).trim();
 
-  const defaultBaud = brand === 'icom' ? 19200 : 38400;
-  console.log(`\n  ⚡ Baud rate — must match your radio's CAT/CI-V setting`);
-  console.log(`     Common: 4800, 9600, 19200, 38400, 115200`);
-  const baudRate = parseInt((await ask(`  Baud rate [${defaultBaud}]: `)).trim()) || defaultBaud;
+  let cfg;
 
-  const defaultStop = brand === 'yaesu' ? 2 : 1;
-  const stopBits = parseInt((await ask(`  Stop bits (1 or 2) [${defaultStop}]: `)).trim()) || defaultStop;
+  if (brand === 'tci') {
+    // ── TCI setup — WebSocket, no serial port ──
+    console.log('\n  🌐 TCI Connection');
+    console.log('     Thetis default:    localhost:40001');
+    console.log('     ExpertSDR default: localhost:40001\n');
 
-  let civAddress = 0x94;
-  if (brand === 'icom') {
-    console.log('\n  🔧 Common Icom CI-V addresses:');
-    Object.entries(ICOM_ADDRESSES).forEach(([n, a]) => console.log(`     ${n}: 0x${a.toString(16).toUpperCase()}`));
-    const civInput = (await ask(`\n  CI-V address [0x${civAddress.toString(16).toUpperCase()}]: `)).trim();
-    if (civInput) civAddress = parseInt(civInput, 16) || civAddress;
+    const tciHost = (await ask('  TCI host [localhost]: ')).trim() || 'localhost';
+    const tciPort = parseInt((await ask('  TCI port [40001]: ')).trim()) || 40001;
+
+    console.log('\n  📡 Transceiver / VFO selection');
+    console.log('     Most setups use TRX 0 (primary receiver) and VFO 0 (VFO-A).');
+    console.log('     Change only if you have a multi-TRX setup (e.g. IC-9700 + SunSDR).\n');
+
+    const trx = parseInt((await ask('  TRX index [0]: ')).trim()) || 0;
+    const vfo = parseInt((await ask('  VFO index (0=A, 1=B) [0]: ')).trim()) || 0;
+
+    const httpPort =
+      parseInt((await ask(`\n  HTTP port for OpenHamClock [${HTTP_PORT_DEFAULT}]: `)).trim()) || HTTP_PORT_DEFAULT;
+    rl.close();
+
+    cfg = {
+      tci: { host: tciHost, port: tciPort, trx, vfo },
+      radio: { brand: 'tci', model, pollInterval: 0, pttEnabled: false },
+      server: { port: httpPort },
+    };
+  } else {
+    // ── Serial setup — USB/serial CAT ──
+    const ports = await listPorts();
+
+    if (ports.length > 0) {
+      console.log('  📟 Available serial ports:\n');
+      ports.forEach((p, i) => {
+        const mfg = p.manufacturer ? `  —  ${p.manufacturer}` : '';
+        const sn = p.serialNumber ? ` (${p.serialNumber})` : '';
+        console.log(`     ${i + 1}) ${p.path}${mfg}${sn}`);
+      });
+      console.log('');
+    } else {
+      console.log('  ⚠️  No serial ports detected.');
+      console.log('     Make sure your radio is connected via USB.\n');
+    }
+
+    let selectedPort = '';
+    if (ports.length > 0) {
+      const choice = await ask(`  Select port (1-${ports.length}, or type path): `);
+      const idx = parseInt(choice) - 1;
+      selectedPort = idx >= 0 && idx < ports.length ? ports[idx].path : choice.trim();
+    } else {
+      selectedPort = (await ask('  Enter serial port (e.g. COM3 or /dev/ttyUSB0): ')).trim();
+    }
+    if (!selectedPort) {
+      console.log('\n  ❌ No port selected.\n');
+      rl.close();
+      process.exit(1);
+    }
+    console.log(`\n  ✅ Port: ${selectedPort}\n`);
+
+    const defaultBaud = brand === 'icom' ? 19200 : 38400;
+    console.log(`  ⚡ Baud rate — must match your radio's CAT/CI-V setting`);
+    console.log(`     Common: 4800, 9600, 19200, 38400, 115200`);
+    const baudRate = parseInt((await ask(`  Baud rate [${defaultBaud}]: `)).trim()) || defaultBaud;
+
+    const defaultStop = brand === 'yaesu' ? 2 : 1;
+    const stopBits = parseInt((await ask(`  Stop bits (1 or 2) [${defaultStop}]: `)).trim()) || defaultStop;
+
+    let civAddress = 0x94;
+    if (brand === 'icom') {
+      console.log('\n  🔧 Common Icom CI-V addresses:');
+      Object.entries(ICOM_ADDRESSES).forEach(([n, a]) => console.log(`     ${n}: 0x${a.toString(16).toUpperCase()}`));
+      const civInput = (await ask(`\n  CI-V address [0x${civAddress.toString(16).toUpperCase()}]: `)).trim();
+      if (civInput) civAddress = parseInt(civInput, 16) || civAddress;
+    }
+
+    const httpPort =
+      parseInt((await ask(`\n  HTTP port for OpenHamClock [${HTTP_PORT_DEFAULT}]: `)).trim()) || HTTP_PORT_DEFAULT;
+    rl.close();
+
+    cfg = {
+      serial: { port: selectedPort, baudRate, dataBits: 8, stopBits, parity: 'none' },
+      radio: { brand, model, civAddress, pollInterval: 500, pttEnabled: false },
+      server: { port: httpPort },
+    };
   }
-
-  const httpPort =
-    parseInt((await ask(`\n  HTTP port for OpenHamClock [${HTTP_PORT_DEFAULT}]: `)).trim()) || HTTP_PORT_DEFAULT;
-  rl.close();
-
-  const cfg = {
-    serial: { port: selectedPort, baudRate, dataBits: 8, stopBits, parity: 'none' },
-    radio: { brand, model, civAddress, pollInterval: 500, pttEnabled: false },
-    server: { port: httpPort },
-  };
 
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
   console.log(`\n  💾 Config saved to ${CONFIG_FILE}`);
@@ -714,6 +1014,17 @@ function parseCLI() {
       case '--http-port':
         o.httpPort = parseInt(args[++i]);
         break;
+      case '--tci':
+        o.tci = true;
+        break;
+      case '--tci-host':
+        o.tci = true;
+        o.tciHost = args[++i];
+        break;
+      case '--tci-port':
+        o.tci = true;
+        o.tciPort = parseInt(args[++i]);
+        break;
       case '--mock':
         o.mock = true;
         break;
@@ -725,7 +1036,7 @@ function parseCLI() {
         console.log(`
 OpenHamClock Rig Listener v${VERSION}
 
-Connects your radio directly to OpenHamClock via USB.
+Connects your radio directly to OpenHamClock via USB or TCI.
 No flrig or rigctld needed — just download and run!
 
 First run:   rig-listener          (interactive wizard)
@@ -734,14 +1045,24 @@ After setup: rig-listener          (uses saved config)
 Options:
   --port, -p <port>    Serial port (COM3, /dev/ttyUSB0)
   --baud, -b <rate>    Baud rate
-  --brand <brand>      yaesu | kenwood | elecraft | icom
+  --brand <brand>      yaesu | kenwood | elecraft | icom | tci
   --http-port <port>   HTTP port (default: 5555)
+  --tci                Connect via TCI (default: localhost:40001)
+  --tci-host <host>    TCI host (default: localhost)
+  --tci-port <port>    TCI port (default: 40001)
   --mock               Simulation mode
   --wizard             Re-run setup wizard
   --help, -h           Show help
 
-OpenHamClock Settings → Rig Control:
-  ☑ Enable     Host: http://localhost     Port: 5555
+Serial radios (Yaesu, Kenwood, Elecraft, Icom):
+  OpenHamClock Settings → Rig Control:
+    ☑ Enable     Host: http://localhost     Port: 5555
+
+TCI/SDR radios (Thetis, SunSDR, ExpertSDR):
+  1. Enable TCI in your SDR application (Thetis → Setup → CAT → TCI)
+  2. Run:  rig-listener --tci
+  3. OpenHamClock Settings → Rig Control:
+     ☑ Enable     Host: http://localhost     Port: 5555
 `);
         process.exit(0);
     }
@@ -761,6 +1082,7 @@ async function main() {
   console.log('╚══════════════════════════════════════════════════╝');
   console.log('');
 
+  // ── Mock mode ──
   if (cli.mock) {
     config = { radio: { brand: 'mock', pttEnabled: false }, server: { port: cli.httpPort || HTTP_PORT_DEFAULT } };
     protocol = MockProtocol;
@@ -773,6 +1095,30 @@ async function main() {
     return;
   }
 
+  // ── Quick-start TCI from CLI (no wizard, no config file needed) ──
+  if (cli.tci && !cli.forceWizard) {
+    const tciHost = cli.tciHost || 'localhost';
+    const tciPort = cli.tciPort || 40001;
+    const httpPort = cli.httpPort || HTTP_PORT_DEFAULT;
+
+    const cfg = {
+      tci: { host: tciHost, port: tciPort, trx: 0, vfo: 0 },
+      radio: { brand: 'tci', model: '', pttEnabled: false },
+      server: { port: httpPort },
+    };
+
+    console.log(`  📻 Radio: TCI/SDR`);
+    console.log(`  🌐 TCI:   ws://${tciHost}:${tciPort}`);
+    console.log(`  🌐 HTTP:  http://localhost:${httpPort}`);
+    console.log('');
+
+    startServer(httpPort);
+    await initTci(cfg);
+    printInstructions(httpPort, true);
+    return;
+  }
+
+  // ── Load or create config ──
   let cfg;
   if (cli.forceWizard || !fs.existsSync(CONFIG_FILE)) {
     cfg = await runWizard();
@@ -785,32 +1131,58 @@ async function main() {
     }
   }
 
-  if (cli.serialPort) cfg.serial.port = cli.serialPort;
-  if (cli.baudRate) cfg.serial.baudRate = cli.baudRate;
+  // CLI overrides
+  if (cli.serialPort && cfg.serial) cfg.serial.port = cli.serialPort;
+  if (cli.baudRate && cfg.serial) cfg.serial.baudRate = cli.baudRate;
   if (cli.brand) cfg.radio.brand = cli.brand;
   if (cli.httpPort) cfg.server.port = cli.httpPort;
+  if (cli.tciHost && cfg.tci) cfg.tci.host = cli.tciHost;
+  if (cli.tciPort && cfg.tci) cfg.tci.port = cli.tciPort;
 
-  if (!cfg.serial.port) {
-    console.error('  ❌ No serial port. Run with --wizard\n');
-    process.exit(1);
+  const isTci = cfg.radio.brand === 'tci' || !!cfg.tci;
+
+  if (isTci) {
+    // ── TCI mode ──
+    const tciHost = cfg.tci?.host || 'localhost';
+    const tciPort = cfg.tci?.port || 40001;
+
+    console.log(`  📻 Radio: TCI/SDR ${cfg.radio.model || ''}`);
+    console.log(`  🌐 TCI:   ws://${tciHost}:${tciPort}`);
+    console.log(`  🌐 HTTP:  http://localhost:${cfg.server.port}`);
+    console.log('');
+
+    startServer(cfg.server.port);
+    await initTci(cfg);
+    printInstructions(cfg.server.port, true);
+  } else {
+    // ── Serial mode ──
+    if (!cfg.serial?.port) {
+      console.error('  ❌ No serial port. Run with --wizard\n');
+      process.exit(1);
+    }
+
+    console.log(`  📻 Radio: ${cfg.radio.brand.toUpperCase()} ${cfg.radio.model || ''}`);
+    console.log(`  🔌 Port:  ${cfg.serial.port} @ ${cfg.serial.baudRate} baud`);
+    console.log(`  🌐 HTTP:  http://localhost:${cfg.server.port}`);
+    console.log('');
+
+    startServer(cfg.server.port);
+    await initSerial(cfg);
+    printInstructions(cfg.server.port);
   }
-
-  console.log(`  📻 Radio: ${cfg.radio.brand.toUpperCase()} ${cfg.radio.model || ''}`);
-  console.log(`  🔌 Port:  ${cfg.serial.port} @ ${cfg.serial.baudRate} baud`);
-  console.log(`  🌐 HTTP:  http://localhost:${cfg.server.port}`);
-  console.log('');
-
-  startServer(cfg.server.port);
-  await initSerial(cfg);
-  printInstructions(cfg.server.port);
 }
 
-function printInstructions(port) {
+function printInstructions(port, isTci = false) {
   console.log('');
   console.log('  ┌──────────────────────────────────────────────┐');
   console.log('  │  In OpenHamClock → Settings → Rig Control:   │');
   console.log('  │    ☑ Enable Rig Control                      │');
   console.log(`  │    Host: http://localhost   Port: ${String(port).padEnd(10)}│`);
+  if (isTci) {
+    console.log('  │                                              │');
+    console.log('  │  TCI: Ensure TCI is enabled in your SDR app  │');
+    console.log('  │  (Thetis → Setup → CAT → Enable TCI)        │');
+  }
   console.log('  │                                              │');
   console.log('  │  Press Ctrl+C to stop.  73!                  │');
   console.log('  └──────────────────────────────────────────────┘');
@@ -820,7 +1192,15 @@ function printInstructions(port) {
 process.on('SIGINT', () => {
   console.log('\n  Shutting down...');
   if (pollTimer) clearInterval(pollTimer);
-  if (serialPort?.isOpen) {
+  if (tciReconnectTimer) clearTimeout(tciReconnectTimer);
+  if (tciSocket) {
+    try {
+      tciSocket.send('stop;');
+      tciSocket.close();
+    } catch {}
+    console.log('  73!');
+    process.exit(0);
+  } else if (serialPort?.isOpen) {
     serialPort.close(() => {
       console.log('  73!');
       process.exit(0);

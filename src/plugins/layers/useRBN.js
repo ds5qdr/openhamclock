@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { makeDraggable } from "./makeDraggable.js";
+import { addMinimizeToggle } from './addMinimizeToggle.js';
+import { makeDraggable } from './makeDraggable.js';
 
 /**
  * Reverse Beacon Network (RBN) Plugin v1.0.0
@@ -17,97 +18,8 @@ import { makeDraggable } from "./makeDraggable.js";
  * Update interval: 10 seconds
  */
 
-// Make control panel draggable with CTRL+drag and save position
+// Make control panel draggable by its title and save position
 // Registry so a second call for the same storageKey cancels the previous listeners.
-
-// Add minimize/maximize functionality to control panels
-function addMinimizeToggle(element, storageKey) {
-  if (!element) return;
-
-  const minimizeKey = storageKey + '-minimized';
-
-  // Create minimize button
-  const header = element.querySelector('div:first-child');
-  if (!header) return;
-
-  // Wrap content (everything except header)
-  const content = Array.from(element.children).slice(1);
-  const contentWrapper = document.createElement('div');
-  contentWrapper.className = 'rbn-panel-content';
-  content.forEach((child) => contentWrapper.appendChild(child));
-  element.appendChild(contentWrapper);
-
-  // Add minimize button to header
-  const minimizeBtn = document.createElement('span');
-  minimizeBtn.className = 'rbn-minimize-btn';
-  minimizeBtn.innerHTML = '▼';
-  minimizeBtn.style.cssText = `
-    float: right;
-    cursor: pointer;
-    user-select: none;
-    padding: 0 4px;
-    margin: -2px -4px 0 0;
-    font-size: 10px;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-  `;
-  minimizeBtn.title = 'Minimize/Maximize';
-
-  minimizeBtn.addEventListener('mouseenter', () => {
-    minimizeBtn.style.opacity = '1';
-  });
-  minimizeBtn.addEventListener('mouseleave', () => {
-    minimizeBtn.style.opacity = '0.7';
-  });
-
-  header.style.display = 'flex';
-  header.style.justifyContent = 'space-between';
-  header.style.alignItems = 'center';
-  header.appendChild(minimizeBtn);
-
-  // Load saved state
-  const isMinimized = localStorage.getItem(minimizeKey) === 'true';
-  if (isMinimized) {
-    contentWrapper.style.display = 'none';
-    minimizeBtn.innerHTML = '▶';
-    element.style.cursor = 'pointer';
-  }
-
-  // Toggle function
-  const toggle = (e) => {
-    // Don't toggle if CTRL is held (for dragging)
-    if (e && e.ctrlKey) return;
-
-    const isCurrentlyMinimized = contentWrapper.style.display === 'none';
-
-    if (isCurrentlyMinimized) {
-      // Expand
-      contentWrapper.style.display = 'block';
-      minimizeBtn.innerHTML = '▼';
-      element.style.cursor = 'default';
-      localStorage.setItem(minimizeKey, 'false');
-    } else {
-      // Minimize
-      contentWrapper.style.display = 'none';
-      minimizeBtn.innerHTML = '▶';
-      element.style.cursor = 'pointer';
-      localStorage.setItem(minimizeKey, 'true');
-    }
-  };
-
-  // Click header to toggle (except on button itself)
-  header.addEventListener('click', (e) => {
-    if (e.target === header || e.target.tagName === 'DIV') {
-      toggle(e);
-    }
-  });
-
-  // Click button to toggle
-  minimizeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggle(e);
-  });
-}
 
 export const metadata = {
   id: 'rbn',
@@ -318,7 +230,6 @@ export function useLayer({
   const [stats, setStats] = useState({ total: 0, skimmers: 0, avgSNR: 0 });
 
   // Low memory mode limits
-  const MAX_SPOTS = lowMemoryMode ? 25 : 200;
   const UPDATE_INTERVAL = lowMemoryMode ? 30000 : 10000; // 10s normal, 30s low-memory (panel says "Update: 10sec")
 
   const layersRef = useRef([]);
@@ -560,7 +471,7 @@ export function useLayer({
       div.style.border = '1px solid var(--border-color)';
 
       div.innerHTML = `
-        <div style="margin-bottom: 8px;">
+        <div style="margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: #00b4ff;">
           <b>📡 RBN: ${callsign}</b>
         </div>
         <div id="rbn-stats-display" style="margin-bottom: 8px; color: var(--text-secondary);">
@@ -683,7 +594,10 @@ export function useLayer({
         }
 
         makeDraggable(controlElement, 'rbn-panel-position');
-        addMinimizeToggle(controlElement, 'rbn-panel');
+        addMinimizeToggle(controlElement, 'rbn-panel', {
+          contentClassName: 'rbn-panel-content',
+          buttonClassName: 'rbn-minimize-btn',
+        });
       }
     }, 150);
 

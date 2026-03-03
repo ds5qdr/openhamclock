@@ -28,6 +28,7 @@ import {
   RigControlPanel,
   OnAirPanel,
   IDTimerPanel,
+  KeybindingsPanel,
   DXLocalTime,
 } from './components';
 
@@ -35,22 +36,10 @@ import { loadLayout, saveLayout } from './store/layoutStore.js';
 import { DockableLayoutProvider } from './contexts';
 import { useRig } from './contexts/RigContext.jsx';
 import { calculateBearing, calculateDistance, formatDistance } from './utils/geo.js';
+import { DXGridInput } from './components/DXGridInput.jsx';
 import './styles/flexlayout-openhamclock.css';
 import useMapLayers from './hooks/app/useMapLayers';
 import useRotator from './hooks/useRotator';
-
-const getEffectiveUnits = (fallback = 'imperial') => {
-  try {
-    const raw = localStorage.getItem('openhamclock_config');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed?.units === 'metric' || parsed?.units === 'imperial') {
-        return parsed.units;
-      }
-    }
-  } catch {}
-  return fallback === 'metric' || fallback === 'imperial' ? fallback : 'imperial';
-};
 
 // Icons
 const PlusIcon = () => (
@@ -160,6 +149,7 @@ export const DockableApp = ({
   handleUpdateClick,
   updateInProgress,
   isLocalInstall,
+  keybindingsList,
 }) => {
   const layoutRef = useRef(null);
   const [model, setModel] = useState(() => Model.fromJson(loadLayout()));
@@ -184,8 +174,66 @@ export const DockableApp = ({
       return next;
     });
   }, []);
-  const [effectiveUnits, setEffectiveUnits] = useState(() => getEffectiveUnits(config?.units));
   const [showDXLocalTime, setShowDXLocalTime] = useState(false);
+
+  // ── Tabset auto-rotation (persistent per tabset) ──
+  const [tabsetRotation, setTabsetRotation] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('openhamclock_tabsetRotation') || '{}');
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('openhamclock_tabsetRotation', JSON.stringify(tabsetRotation));
+    } catch {}
+  }, [tabsetRotation]);
+
+  const rotationTimers = useRef({});
+  useEffect(() => {
+    Object.values(rotationTimers.current).forEach(clearInterval);
+    rotationTimers.current = {};
+
+    Object.entries(tabsetRotation).forEach(([tabsetId, cfg]) => {
+      if (!cfg?.enabled || !cfg?.interval || !model) return;
+      rotationTimers.current[tabsetId] = setInterval(() => {
+        try {
+          const tabset = model.getNodeById(tabsetId);
+          if (!tabset) return;
+          const children = tabset.getChildren?.() || [];
+          if (children.length < 2) return;
+          const selected = tabset.getSelectedNode?.();
+          const currentIdx = children.findIndex((c) => c === selected);
+          const nextIdx = (currentIdx + 1) % children.length;
+          model.doAction(Actions.selectTab(children[nextIdx].getId()));
+        } catch {}
+      }, cfg.interval * 1000);
+    });
+
+    return () => {
+      Object.values(rotationTimers.current).forEach(clearInterval);
+      rotationTimers.current = {};
+    };
+  }, [tabsetRotation, model]);
+
+  const toggleTabsetRotation = useCallback((tabsetId) => {
+    setTabsetRotation((prev) => ({
+      ...prev,
+      [tabsetId]: {
+        enabled: !prev[tabsetId]?.enabled,
+        interval: prev[tabsetId]?.interval || 15,
+      },
+    }));
+  }, []);
+
+  const setTabsetInterval = useCallback((tabsetId, secs) => {
+    setTabsetRotation((prev) => ({
+      ...prev,
+      [tabsetId]: { ...prev[tabsetId], interval: parseInt(secs, 10) },
+    }));
+  }, []);
 
   // Fallback: if parent did not provide map-layer toggles (seen with rotator),
   // use the internal hook so the map buttons still work.
@@ -230,17 +278,6 @@ export const DockableApp = ({
       localStorage.setItem('openhamclock_panelZoom', JSON.stringify(panelZoom));
     } catch {}
   }, [panelZoom]);
-
-  useEffect(() => {
-    const syncUnits = () => setEffectiveUnits(getEffectiveUnits(config?.units));
-    syncUnits();
-    window.addEventListener('storage', syncUnits);
-    window.addEventListener('openhamclock-config-change', syncUnits);
-    return () => {
-      window.removeEventListener('storage', syncUnits);
-      window.removeEventListener('openhamclock-config-change', syncUnits);
-    };
-  }, [config?.units]);
 
   const ZOOM_STEPS = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.75, 2.0];
   const adjustZoom = useCallback((component, delta) => {
@@ -377,6 +414,7 @@ export const DockableApp = ({
       'rig-control': { name: 'Rig Control', icon: '📻' },
       'on-air': { name: 'On Air', icon: '🔴' },
       'id-timer': { name: 'ID Timer', icon: '📢' },
+      keybindings: { name: 'Keyboard Shortcuts', icon: '⌨️' },
     };
   }, [isLocalInstall]);
 
@@ -400,7 +438,7 @@ export const DockableApp = ({
 
   // Render DE Location panel content
   const renderDELocation = (nodeId) => (
-    <div style={{ padding: '14px', height: '100%', overflowY: 'auto' }}>
+    <div className="panel" style={{ padding: '14px', height: '100%', overflowY: 'auto' }}>
       <div style={{ fontSize: '14px', color: 'var(--accent-cyan)', fontWeight: '700', marginBottom: '10px' }}>
         📍 DE - YOUR LOCATION
       </div>
@@ -417,7 +455,7 @@ export const DockableApp = ({
         </div>
       </div>
 
-      <WeatherPanel weatherData={localWeather} units={config.units} nodeId={nodeId} />
+      <WeatherPanel weatherData={localWeather} allUnits={config.allUnits} nodeId={nodeId} />
     </div>
   );
 
@@ -430,7 +468,7 @@ export const DockableApp = ({
     const distanceKm = calculateDistance(config.location.lat, config.location.lon, dxLocation.lat, dxLocation.lon);
 
     return (
-      <div style={{ padding: '14px', height: '100%', overflowY: 'auto' }}>
+      <div className="panel" style={{ padding: '14px', height: '100%', overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <div style={{ fontSize: '14px', color: 'var(--accent-green)', fontWeight: '700' }}>🎯 DX - TARGET</div>
           {handleToggleDxLock && (
@@ -457,7 +495,12 @@ export const DockableApp = ({
         </div>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
           <div style={{ fontFamily: 'JetBrains Mono', fontSize: '14px', flex: '1 1 auto', minWidth: 0 }}>
-            <div style={{ color: 'var(--accent-amber)', fontSize: '22px', fontWeight: '700' }}>{dxGrid}</div>
+            <DXGridInput
+              dxGrid={dxGrid}
+              onDXChange={handleDXChange}
+              dxLocked={dxLocked}
+              style={{ color: 'var(--accent-amber)', fontSize: '22px', fontWeight: '700' }}
+            />
             <DXLocalTime
               currentTime={currentTime}
               dxLocation={dxLocation}
@@ -496,13 +539,13 @@ export const DockableApp = ({
             </div>
             <div style={{ fontSize: '13px', paddingTop: '6px', borderTop: '1px solid var(--border-color)' }}>
               <span style={{ color: 'var(--accent-cyan)', fontWeight: '700' }}>
-                📏 {formatDistance(distanceKm, effectiveUnits)}
+                📏 {formatDistance(distanceKm, config.allUnits.dist)}
               </span>
             </div>
           </div>
         </div>
 
-        {showDxWeather && <WeatherPanel weatherData={dxWeather} units={config.units} nodeId={nodeId} />}
+        {showDxWeather && <WeatherPanel weatherData={dxWeather} allUnits={config.allUnits} nodeId={nodeId} />}
       </div>
     );
   };
@@ -556,6 +599,7 @@ export const DockableApp = ({
         satellites={filteredSatellites}
         pskReporterSpots={filteredPskSpots}
         wsjtxSpots={wsjtxMapSpots}
+        showDeDxMarkers={mapLayersEff.showDeDxMarkers}
         showDXPaths={mapLayersEff.showDXPaths}
         showDXLabels={mapLayersEff.showDXLabels}
         onToggleDXLabels={mapLayersEff.showDXPaths ? toggleDXLabelsEff : undefined}
@@ -588,7 +632,7 @@ export const DockableApp = ({
         rightSidebarVisible={true}
         callsign={config.callsign}
         lowMemoryMode={config.lowMemoryMode}
-        units={config.units}
+        allUnits={config.allUnits}
         onSpotClick={handleSpotClick}
         mouseZoom={config.mouseZoom}
       />
@@ -644,7 +688,7 @@ export const DockableApp = ({
               propagation={propagation.data}
               loading={propagation.loading}
               bandConditions={bandConditions}
-              units={config.units}
+              allUnits={config.allUnits}
               propConfig={config.propagation}
             />
           );
@@ -656,7 +700,7 @@ export const DockableApp = ({
               propagation={propagation.data}
               loading={propagation.loading}
               bandConditions={bandConditions}
-              units={config.units}
+              allUnits={config.allUnits}
               propConfig={config.propagation}
               forcedMode="chart"
             />
@@ -669,7 +713,7 @@ export const DockableApp = ({
               propagation={propagation.data}
               loading={propagation.loading}
               bandConditions={bandConditions}
-              units={config.units}
+              allUnits={config.allUnits}
               propConfig={config.propagation}
               forcedMode="bars"
             />
@@ -682,7 +726,7 @@ export const DockableApp = ({
               propagation={propagation.data}
               loading={propagation.loading}
               bandConditions={bandConditions}
-              units={config.units}
+              allUnits={config.allUnits}
               propConfig={config.propagation}
               forcedMode="bands"
             />
@@ -725,6 +769,7 @@ export const DockableApp = ({
               wsjtxDecodes={wsjtx.decodes}
               wsjtxClients={wsjtx.clients}
               wsjtxQsos={wsjtx.qsos}
+              wsjtxWspr={wsjtx.wspr}
               wsjtxStats={wsjtx.stats}
               wsjtxLoading={wsjtx.loading}
               wsjtxEnabled={wsjtx.enabled}
@@ -851,7 +896,7 @@ export const DockableApp = ({
           );
 
         case 'ambient':
-          content = <AmbientPanel units={config.units} />;
+          content = <AmbientPanel allUnits={config.allUnits} />;
           break;
 
         case 'rig-control':
@@ -864,6 +909,10 @@ export const DockableApp = ({
 
         case 'id-timer':
           content = <IDTimerPanel callsign={config.callsign} />;
+          break;
+
+        case 'keybindings':
+          content = <KeybindingsPanel keybindings={keybindingsList} nodeId={nodeId} />;
           break;
 
         default:
@@ -930,6 +979,7 @@ export const DockableApp = ({
       dxLocked,
       handleToggleDxLock,
       panelZoom,
+      keybindingsList,
     ],
   );
 
@@ -1008,6 +1058,65 @@ export const DockableApp = ({
         );
       }
 
+      // Auto-rotation controls for tabsets with 2+ tabs
+      const tabsetId = node.getId();
+      const children = node.getChildren?.() || [];
+      if (children.length >= 2) {
+        const rotCfg = tabsetRotation[tabsetId];
+        const isRotating = rotCfg?.enabled;
+
+        if (isRotating) {
+          renderValues.stickyButtons.push(
+            <select
+              key="rotate-interval"
+              value={rotCfg?.interval || 15}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation();
+                setTabsetInterval(tabsetId, e.target.value);
+              }}
+              style={{
+                fontSize: '9px',
+                padding: '1px 2px',
+                background: 'var(--bg-secondary)',
+                color: 'var(--accent-amber)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '3px',
+                outline: 'none',
+                cursor: 'pointer',
+                width: '40px',
+                height: '18px',
+              }}
+            >
+              {[5, 10, 15, 20, 30, 45, 60].map((s) => (
+                <option key={s} value={s}>
+                  {s}s
+                </option>
+              ))}
+            </select>,
+          );
+        }
+
+        renderValues.stickyButtons.push(
+          <button
+            key="rotate"
+            title={isRotating ? 'Stop auto-rotate' : 'Auto-rotate tabs'}
+            className="flexlayout__tab_toolbar_button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleTabsetRotation(tabsetId);
+            }}
+            style={{
+              fontSize: '11px',
+              padding: '0 3px',
+              color: isRotating ? 'var(--accent-amber)' : undefined,
+            }}
+          >
+            {isRotating ? '⏸' : '▶'}
+          </button>,
+        );
+      }
+
       renderValues.stickyButtons.push(
         <button
           key="add"
@@ -1026,7 +1135,7 @@ export const DockableApp = ({
         </button>,
       );
     },
-    [panelZoom, adjustZoom, resetZoom, layoutLocked],
+    [panelZoom, adjustZoom, resetZoom, layoutLocked, tabsetRotation, toggleTabsetRotation, setTabsetInterval],
   );
 
   // Get unused panels

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { makeDraggable } from "./makeDraggable.js";
+import { addMinimizeToggle } from './addMinimizeToggle.js';
+import { makeDraggable } from './makeDraggable.js';
 
 /**
  * VOACAP-Style Propagation Heatmap Plugin v1.0.0
@@ -87,33 +88,7 @@ function reliabilityColor(r) {
   return { color: `rgb(${red},${green},${blue})`, alpha };
 }
 
-
-// Minimize/maximize toggle
-function addMinimizeToggle(container, storageKey) {
-  if (!container) return;
-
-  const contentWrapper = container.querySelector('.voacap-panel-content');
-  const minimizeBtn = container.querySelector('.voacap-minimize-btn');
-  if (!contentWrapper || !minimizeBtn) return;
-
-  const minKey = storageKey + '-minimized';
-  const isMinimized = localStorage.getItem(minKey) === 'true';
-
-  if (isMinimized) {
-    contentWrapper.style.display = 'none';
-    minimizeBtn.textContent = '▶';
-  }
-
-  minimizeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const hidden = contentWrapper.style.display === 'none';
-    contentWrapper.style.display = hidden ? 'block' : 'none';
-    minimizeBtn.textContent = hidden ? '▼' : '▶';
-    localStorage.setItem(minKey, !hidden);
-  });
-}
-
-export function useLayer({ map, enabled, opacity, callsign, locator }) {
+export function useLayer({ map, enabled, opacity, locator }) {
   const [selectedBand, setSelectedBand] = useState(() => {
     const saved = localStorage.getItem('voacap-heatmap-band');
     return saved ? parseInt(saved) : 4; // Default: 20m (index 4)
@@ -140,7 +115,6 @@ export function useLayer({ map, enabled, opacity, callsign, locator }) {
   });
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [lastFetch, setLastFetch] = useState(0);
 
   const layersRef = useRef([]);
   const controlRef = useRef(null);
@@ -251,7 +225,7 @@ export function useLayer({ map, enabled, opacity, callsign, locator }) {
             backdrop-filter: blur(8px);
           ">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-              <span style="color: #ffaa00; font-weight: 700; font-size: 12px;">🌐 VOACAP Heatmap</span>
+              <span data-drag-handle="true" style="color: #00b4ff; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 13px; cursor: grab; user-select: none;">🌐 VOACAP Heatmap</span>
               <button class="voacap-minimize-btn" style="
                 background: none; border: none; color: #888; font-size: 10px;
                 cursor: pointer; padding: 2px 4px;
@@ -353,8 +327,11 @@ export function useLayer({ map, enabled, opacity, callsign, locator }) {
         } catch (e) {}
       }
 
+      addMinimizeToggle(container, 'voacap-heatmap-position', {
+        contentClassName: 'voacap-panel-content',
+        buttonClassName: 'voacap-minimize-btn',
+      });
       makeDraggable(container, 'voacap-heatmap-position');
-      addMinimizeToggle(container, 'voacap-heatmap-position');
 
       const bandSelect = document.getElementById('voacap-band-select');
       const gridSelect = document.getElementById('voacap-grid-select');
@@ -435,7 +412,6 @@ export function useLayer({ map, enabled, opacity, callsign, locator }) {
 
     data.cells.forEach((cell) => {
       const { color, alpha } = reliabilityColor(cell.r);
-      const band = BANDS[selectedBand];
 
       // Scale alpha by the user opacity slider (slider default 0.6 = 60%)
       const cellAlpha = alpha * (opacity / 0.6);
@@ -492,24 +468,4 @@ export function useLayer({ map, enabled, opacity, callsign, locator }) {
   }, [enabled, map]);
 
   return { data, loading, selectedBand };
-}
-
-// Quick haversine for popup display (no need for full precision)
-function haversineApprox(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
-
-// Format distance using global units preference from config
-function formatDistanceApprox(km) {
-  try {
-    const cfg = JSON.parse(localStorage.getItem('openhamclock_config') || '{}');
-    if (cfg.units === 'metric') return `${km.toLocaleString()} km`;
-  } catch (e) {}
-  return `${Math.round(km * 0.621371).toLocaleString()} mi`;
 }

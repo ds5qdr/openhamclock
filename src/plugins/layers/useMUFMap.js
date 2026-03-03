@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { addMinimizeToggle } from './addMinimizeToggle.js';
 import { makeDraggable } from './makeDraggable.js';
 
 /**
@@ -171,24 +172,6 @@ function buildMUFCanvas(stations) {
   return smooth.toDataURL('image/png');
 }
 
-function addMinimizeToggle(container, storageKey) {
-  const content = container.querySelector('.muf-panel-content');
-  const btn = container.querySelector('.muf-minimize-btn');
-  if (!content || !btn) return;
-  const key = storageKey + '-minimized';
-  if (localStorage.getItem(key) === 'true') {
-    content.style.display = 'none';
-    btn.textContent = '▶';
-  }
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const hidden = content.style.display === 'none';
-    content.style.display = hidden ? 'block' : 'none';
-    btn.textContent = hidden ? '▼' : '▶';
-    localStorage.setItem(key, !hidden);
-  });
-}
-
 // ── Layer hook ──────────────────────────────────────────────────────
 export function useLayer({ map, enabled, opacity }) {
   const [stations, setStations] = useState(null);
@@ -330,7 +313,7 @@ export function useLayer({ map, enabled, opacity }) {
             backdrop-filter: blur(8px);
           ">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-              <span style="color: #00b4ff; font-weight: 700; font-size: 12px;">📡 MUF Map</span>
+              <span data-drag-handle="true" style="color: #00b4ff; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 13px; cursor: grab; user-select: none;">📡 MUF Map</span>
               <button class="muf-minimize-btn" style="
                 background: none; border: none; color: #888; font-size: 10px;
                 cursor: pointer; padding: 2px 4px;
@@ -375,8 +358,11 @@ export function useLayer({ map, enabled, opacity }) {
     setTimeout(() => {
       const container = controlRef.current?._container;
       if (!container) return;
+      addMinimizeToggle(container, 'muf-map-position', {
+        contentClassName: 'muf-panel-content',
+        buttonClassName: 'muf-minimize-btn',
+      });
       makeDraggable(container, 'muf-map-position');
-      addMinimizeToggle(container, 'muf-map-position');
     }, 150);
   }, [enabled, map, stations, loading]);
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { makeDraggable } from "./makeDraggable.js";
+import { addMinimizeToggle } from './addMinimizeToggle.js';
+import { makeDraggable } from './makeDraggable.js';
 import { getBandFromFreq } from '../../utils/callsign.js';
 
 /**
@@ -16,7 +17,7 @@ import { getBandFromFreq } from '../../utils/callsign.js';
  * - Band activity chart (v1.3.0)
  * - Propagation score indicator (v1.3.0)
  * - Best DX paths highlighting (v1.3.0)
- * - Draggable control panels with CTRL+drag (v1.4.0)
+ * - Draggable control panels via title drag (v1.4.0)
  * - Persistent panel positions (v1.4.1)
  * - Proper cleanup on disable (v1.4.1)
  * - Fixed duplicate control creation (v1.4.2)
@@ -72,7 +73,7 @@ function gridToLatLon(grid) {
 function fmtDist(km) {
   try {
     const cfg = JSON.parse(localStorage.getItem('openhamclock_config') || '{}');
-    if (cfg.units === 'metric') return `${Math.round(km).toLocaleString()} km`;
+    if (cfg.allUnits.dist === 'metric') return `${Math.round(km).toLocaleString()} km`;
   } catch (e) {}
   return `${Math.round(km * 0.621371).toLocaleString()} mi`;
 }
@@ -201,114 +202,7 @@ function calculatePropagationScore(spots) {
   return Math.round(snrScore + countScore + strongScore);
 }
 
-
-// Add minimize/maximize functionality to control panels
-function addMinimizeToggle(element, storageKey) {
-  if (!element) {
-    console.warn('[WSPR] addMinimizeToggle: element is null/undefined for', storageKey);
-    return;
-  }
-
-  const minimizeKey = storageKey + '-minimized';
-
-  // Create minimize button
-  // Use firstElementChild instead of querySelector
-  const header = element.firstElementChild;
-  if (!header) {
-    console.warn('[WSPR] No header found for minimize toggle on', storageKey, 'children:', element.children.length);
-    return;
-  }
-
-  console.log('[WSPR] Adding minimize toggle to', storageKey, 'header:', header.innerHTML.substring(0, 50));
-
-  // Wrap content (everything except header)
-  const content = Array.from(element.children).slice(1);
-  const contentWrapper = document.createElement('div');
-  contentWrapper.className = 'wspr-panel-content';
-  content.forEach((child) => contentWrapper.appendChild(child));
-  element.appendChild(contentWrapper);
-
-  // Add minimize button to header
-  const minimizeBtn = document.createElement('span');
-  minimizeBtn.className = 'wspr-minimize-btn';
-  minimizeBtn.innerHTML = '▼';
-  minimizeBtn.style.cssText = `
-    float: right;
-    cursor: pointer;
-    user-select: none;
-    padding: 0 4px;
-    margin: -2px -4px 0 0;
-    font-size: 10px;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-  `;
-  minimizeBtn.title = 'Minimize/Maximize';
-
-  minimizeBtn.addEventListener('mouseenter', () => {
-    minimizeBtn.style.opacity = '1';
-  });
-  minimizeBtn.addEventListener('mouseleave', () => {
-    minimizeBtn.style.opacity = '0.7';
-  });
-
-  header.style.display = 'flex';
-  header.style.justifyContent = 'space-between';
-  header.style.alignItems = 'center';
-  header.appendChild(minimizeBtn);
-
-  // Load saved state
-  const isMinimized = localStorage.getItem(minimizeKey) === 'true';
-  if (isMinimized) {
-    contentWrapper.style.display = 'none';
-    minimizeBtn.innerHTML = '▶';
-    element.style.cursor = 'pointer';
-  }
-
-  // Toggle function
-  const toggle = (e) => {
-    // Don't toggle if CTRL is held (for dragging)
-    if (e && e.ctrlKey) return;
-
-    const isCurrentlyMinimized = contentWrapper.style.display === 'none';
-
-    if (isCurrentlyMinimized) {
-      // Expand
-      contentWrapper.style.display = 'block';
-      minimizeBtn.innerHTML = '▼';
-      element.style.cursor = 'default';
-      localStorage.setItem(minimizeKey, 'false');
-    } else {
-      // Minimize
-      contentWrapper.style.display = 'none';
-      minimizeBtn.innerHTML = '▶';
-      element.style.cursor = 'pointer';
-      localStorage.setItem(minimizeKey, 'true');
-    }
-  };
-
-  // Click header to toggle (except on button itself)
-  header.addEventListener('click', (e) => {
-    if (e.target === header || e.target.tagName === 'DIV') {
-      toggle(e);
-    }
-  });
-
-  // Click button to toggle
-  minimizeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggle(e);
-  });
-}
-
-export function useLayer({
-  enabled = false,
-  opacity = 0.7,
-  map = null,
-  callsign,
-  locator,
-  lowMemoryMode = false,
-  mapBandFilter,
-}) {
+export function useLayer({ enabled = false, map = null, callsign, locator, lowMemoryMode = false, mapBandFilter }) {
   const [pathLayers, setPathLayers] = useState([]);
   const [markerLayers, setMarkerLayers] = useState([]);
   const [heatmapLayer, setHeatmapLayer] = useState(null);
@@ -325,7 +219,6 @@ export function useLayer({
 
   // Low memory mode limits
   const MAX_PATHS = lowMemoryMode ? 100 : 10000;
-  const MAX_HEATMAP_POINTS = lowMemoryMode ? 50 : 500;
 
   // v1.4.3 - Separate opacity controls
   const [pathOpacity, setPathOpacity] = useState(0.7);
@@ -337,12 +230,10 @@ export function useLayer({
   const filterControlRef = useRef(null);
   const chartControlRef = useRef(null);
 
-  const [legendControl, setLegendControl] = useState(null);
-  const [statsControl, setStatsControl] = useState(null);
-  const [filterControl, setFilterControl] = useState(null);
-  const [chartControl, setChartControl] = useState(null);
-
-  const animationFrameRef = useRef(null);
+  const [_legendControl, setLegendControl] = useState(null);
+  const [_statsControl, setStatsControl] = useState(null);
+  const [_filterControl, setFilterControl] = useState(null);
+  const [_chartControl, setChartControl] = useState(null);
 
   // Fetch WSPR data with dynamic time window and band filter
 
@@ -522,8 +413,8 @@ export function useLayer({
         `;
 
         container.innerHTML = `
-          <div style="font-weight: bold; margin-bottom: 8px; font-size: 12px;">🎛️ Filters</div>
-          
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-bottom: 8px; font-size: 13px; color: #00b4ff;">🎛️ Filters</div>
+
           <div style="margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 3px;">Band:</label>
             <select id="wspr-band-filter" style="width: 100%; padding: 4px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px;">
@@ -543,7 +434,7 @@ export function useLayer({
               <option value="4m">4m</option>
             </select>
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 3px;">Time Window:</label>
             <select id="wspr-time-filter" style="width: 100%; padding: 4px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px;">
@@ -554,46 +445,46 @@ export function useLayer({
               <option value="360">6 hours</option>
             </select>
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 3px;">Min SNR: <span id="snr-value">-30</span> dB</label>
-            <input type="range" id="wspr-snr-filter" min="-30" max="10" value="-30" step="5" 
+            <input type="range" id="wspr-snr-filter" min="-30" max="10" value="-30" step="5"
               style="width: 100%;" />
           </div>
-          
+
           <div style="margin-bottom: 8px; padding-top: 8px; border-top: 1px solid #555;">
             <label style="display: block; margin-bottom: 3px;">Path Opacity: <span id="path-opacity-value">70</span>%</label>
-            <input type="range" id="wspr-path-opacity" min="10" max="100" value="70" step="5" 
+            <input type="range" id="wspr-path-opacity" min="10" max="100" value="70" step="5"
               style="width: 100%;" />
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 3px;">Heatmap Opacity: <span id="heatmap-opacity-value">60</span>%</label>
-            <input type="range" id="wspr-heatmap-opacity" min="10" max="100" value="60" step="5" 
+            <input type="range" id="wspr-heatmap-opacity" min="10" max="100" value="60" step="5"
               style="width: 100%;" />
           </div>
-          
+
           <div style="margin-bottom: 8px; padding-top: 8px; border-top: 1px solid #555;">
             <label style="display: flex; align-items: center; cursor: pointer;">
               <input type="checkbox" id="wspr-animation" checked style="margin-right: 5px;" />
               <span>Animate Paths</span>
             </label>
           </div>
-          
+
           <div style="margin-bottom: 8px;">
             <label style="display: flex; align-items: center; cursor: pointer;">
               <input type="checkbox" id="wspr-heatmap" style="margin-right: 5px;" />
               <span>Show Heatmap</span>
             </label>
           </div>
-          
+
           <div style="margin-bottom: 8px; padding-top: 8px; border-top: 1px solid #555;">
             <label style="display: flex; align-items: center; cursor: pointer; margin-bottom: 5px;">
               <input type="checkbox" id="wspr-grid-filter" style="margin-right: 5px;" />
               <span>Filter by Grid Square</span>
             </label>
-            <input type="text" id="wspr-grid-input" 
-              placeholder="${gridFilter || 'e.g. FN03'}" 
+            <input type="text" id="wspr-grid-input"
+              placeholder="${gridFilter || 'e.g. FN03'}"
               value="${gridFilter || ''}"
               maxlength="6"
               style="width: 100%; padding: 4px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px; font-family: 'JetBrains Mono', monospace; text-transform: uppercase;" />
@@ -634,7 +525,10 @@ export function useLayer({
         }
 
         makeDraggable(container, 'wspr-filter-position');
-        addMinimizeToggle(container, 'wspr-filter-position');
+        addMinimizeToggle(container, 'wspr-filter-position', {
+          contentClassName: 'wspr-panel-content',
+          buttonClassName: 'wspr-minimize-btn',
+        });
       }
     }, 150);
 
@@ -713,7 +607,7 @@ export function useLayer({
           min-width: 160px;
         `;
         div.innerHTML = `
-          <div style="font-weight: bold; margin-bottom: 6px; font-size: 13px;">📊 WSPR Activity</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-bottom: 6px; font-size: 13px; color: #00b4ff;">📊 WSPR Activity</div>
           <div style="margin-bottom: 8px; padding: 6px; background: var(--bg-tertiary); border-radius: 3px;">
             <div style="font-size: 10px; opacity: 0.8; margin-bottom: 2px;">Propagation Score</div>
             <div style="font-size: 18px; font-weight: bold; color: var(--text-muted);">--/100</div>
@@ -755,7 +649,10 @@ export function useLayer({
         }
 
         makeDraggable(container, 'wspr-stats-position');
-        addMinimizeToggle(container, 'wspr-stats-position');
+        addMinimizeToggle(container, 'wspr-stats-position', {
+          contentClassName: 'wspr-panel-content',
+          buttonClassName: 'wspr-minimize-btn',
+        });
       }
     }, 150);
 
@@ -775,7 +672,7 @@ export function useLayer({
           box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         `;
         div.innerHTML = `
-          <div style="font-weight: bold; margin-bottom: 5px; font-size: 12px;">📡 Signal Strength</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-bottom: 5px; font-size: 13px; color: #00b4ff;">📡 Signal Strength</div>
           <div><span style="color: var(--accent-green);">●</span> Excellent (&gt; 5 dB)</div>
           <div><span style="color: var(--accent-green-dim);">●</span> Good (0 to 5 dB)</div>
           <div><span style="color: var(--accent-amber);">●</span> Moderate (-10 to 0 dB)</div>
@@ -810,7 +707,10 @@ export function useLayer({
         }
 
         makeDraggable(container, 'wspr-legend-position');
-        addMinimizeToggle(container, 'wspr-legend-position');
+        addMinimizeToggle(container, 'wspr-legend-position', {
+          contentClassName: 'wspr-panel-content',
+          buttonClassName: 'wspr-minimize-btn',
+        });
       }
     }, 150);
 
@@ -831,7 +731,7 @@ export function useLayer({
           min-width: 160px;
         `;
         div.innerHTML =
-          '<div style="font-weight: bold; margin-bottom: 6px; font-size: 11px;">📊 Band Activity</div><div style="opacity: 0.7;">Loading...</div>';
+          '<div style="font-family: \'JetBrains Mono\', monospace; font-weight: 700; margin-bottom: 6px; font-size: 13px; color: #00b4ff;">📊 Band Activity</div><div style="opacity: 0.7;">Loading...</div>';
 
         // Prevent map interaction when clicking/dragging on this control
         L.DomEvent.disableClickPropagation(div);
@@ -863,7 +763,10 @@ export function useLayer({
         }
 
         makeDraggable(container, 'wspr-chart-position');
-        addMinimizeToggle(container, 'wspr-chart-position');
+        addMinimizeToggle(container, 'wspr-chart-position', {
+          contentClassName: 'wspr-panel-content',
+          buttonClassName: 'wspr-minimize-btn',
+        });
       }
     }, 150);
 
@@ -1240,7 +1143,7 @@ export function useLayer({
         } else {
           // Initial render before minimize toggle is added
           statsContainer.innerHTML = `
-            <div style="font-weight: bold; margin-bottom: 6px; font-size: 13px;">📊 WSPR Activity</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-bottom: 6px; font-size: 13px; color: #00b4ff;">📊 WSPR Activity</div>
             ${contentHTML}
           `;
         }
@@ -1286,7 +1189,7 @@ export function useLayer({
         } else {
           // Initial render before minimize toggle is added
           chartContainer.innerHTML = `
-            <div style="font-weight: bold; margin-bottom: 6px; font-size: 11px;">📊 Band Activity</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-bottom: 6px; font-size: 13px; color: #00b4ff;">📊 Band Activity</div>
             ${chartContentHTML}
           `;
         }
