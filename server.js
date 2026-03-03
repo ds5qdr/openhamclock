@@ -7739,42 +7739,67 @@ app.get('/api/satellites/tle', async (req, res) => {
 
     // Fill missing satellites — CelesTrak group files don't include every ham sat.
     // Fetch individual TLEs by NORAD catalog number for any HAM_SATELLITES not yet resolved.
+    // Tries CelesTrak CATNR first, then SatNOGS API as fallback.
     const foundNorads = new Set(Object.values(tleData).map((s) => s.norad));
     const missingSats = Object.entries(HAM_SATELLITES).filter(([, s]) => !foundNorads.has(s.norad));
     if (missingSats.length > 0 && missingSats.length <= 30) {
-      logDebug(`[Satellites] ${missingSats.length} sats missing from group files, fetching individually...`);
-      // Fetch in batches of 5 to avoid hammering CelesTrak
+      logDebug(`[Satellites] ${missingSats.length} sats missing from group files: ${missingSats.map(([k]) => k).join(', ')}`);
+      // Fetch in batches of 5 to avoid hammering upstream
       for (let i = 0; i < missingSats.length; i += 5) {
         const batch = missingSats.slice(i, i + 5);
         const results = await Promise.allSettled(
           batch.map(async ([key, sat]) => {
+            // Try CelesTrak individual CATNR lookup first
             try {
               const catRes = await fetch(
                 `https://celestrak.org/NORAD/elements/gp.php?CATNR=${sat.norad}&FORMAT=tle`,
                 { headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` }, signal: AbortSignal.timeout(5000) },
               );
               if (catRes.ok) {
-                const catLines = (await catRes.text()).trim().split('\n');
+                const catText = await catRes.text();
+                const catLines = catText.trim().split('\n');
                 if (catLines.length >= 3 && catLines[1].trim().startsWith('1 ')) {
-                  tleData[key.replace(/[^A-Z0-9\-]/g, '_').toUpperCase()] = {
-                    ...sat,
-                    tle1: catLines[1].trim(),
-                    tle2: catLines[2].trim(),
-                  };
+                  const tleKey = key.replace(/[^A-Z0-9\-]/g, '_').toUpperCase();
+                  tleData[tleKey] = { ...sat, tle1: catLines[1].trim(), tle2: catLines[2].trim() };
+                  logDebug(`[Satellites] Filled ${key} (NORAD ${sat.norad}) from CelesTrak CATNR`);
+                  return key;
+                }
+                logDebug(`[Satellites] CelesTrak CATNR ${sat.norad} returned unexpected format: ${catLines.length} lines`);
+              }
+            } catch (e) {
+              logDebug(`[Satellites] CelesTrak CATNR ${sat.norad} failed: ${e.message}`);
+            }
+
+            // Fallback: SatNOGS TLE API
+            try {
+              const satnogsRes = await fetch(
+                `https://db.satnogs.org/api/tle/?norad_cat_id=${sat.norad}&format=json`,
+                { headers: { 'User-Agent': `OpenHamClock/${APP_VERSION}` }, signal: AbortSignal.timeout(5000) },
+              );
+              if (satnogsRes.ok) {
+                const satnogsData = await satnogsRes.json();
+                const entry = Array.isArray(satnogsData) ? satnogsData[0] : satnogsData;
+                if (entry?.tle1 && entry?.tle2) {
+                  const tleKey = key.replace(/[^A-Z0-9\-]/g, '_').toUpperCase();
+                  tleData[tleKey] = { ...sat, tle1: entry.tle1.trim(), tle2: entry.tle2.trim() };
+                  logDebug(`[Satellites] Filled ${key} (NORAD ${sat.norad}) from SatNOGS`);
                   return key;
                 }
               }
             } catch (e) {
-              // Silently skip — sat may not exist in CelesTrak yet
+              logDebug(`[Satellites] SatNOGS ${sat.norad} failed: ${e.message}`);
             }
+
+            logDebug(`[Satellites] Could not resolve TLE for ${key} (NORAD ${sat.norad}) from any source`);
             return null;
           }),
         );
         const filled = results.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value);
-        if (filled.length > 0) logDebug(`[Satellites] Filled: ${filled.join(', ')}`);
-        // Small delay between batches to be polite to CelesTrak
-        if (i + 5 < missingSats.length) await new Promise((r) => setTimeout(r, 200));
+        if (filled.length > 0) logDebug(`[Satellites] Batch filled: ${filled.join(', ')}`);
+        // Small delay between batches to be polite
+        if (i + 5 < missingSats.length) await new Promise((r) => setTimeout(r, 300));
       }
+      logDebug(`[Satellites] After fill: ${Object.keys(tleData).length} total satellites resolved`);
     }
 
     // ISS fallback — try CelesTrak direct if ISS not found
@@ -7814,6 +7839,27 @@ app.get('/api/satellites/tle', async (req, res) => {
     // Return stale cache or empty if everything fails
     res.json(tleCache.data || {});
   }
+});
+
+// Satellite debug endpoint — shows which sats resolved and which are missing
+app.get('/api/satellites/debug', (req, res) => {
+  const cached = tleCache.data || {};
+  const resolvedNorads = new Set(Object.values(cached).map((s) => s.norad));
+  const all = Object.entries(HAM_SATELLITES).map(([key, sat]) => ({
+    key,
+    norad: sat.norad,
+    name: sat.name,
+    resolved: resolvedNorads.has(sat.norad),
+    tleKey: Object.keys(cached).find((k) => cached[k].norad === sat.norad) || null,
+  }));
+  res.json({
+    cacheAge: tleCache.timestamp ? `${Math.round((Date.now() - tleCache.timestamp) / 1000)}s ago` : 'empty',
+    totalInRegistry: Object.keys(HAM_SATELLITES).length,
+    totalResolved: Object.keys(cached).length,
+    totalMissing: all.filter((s) => !s.resolved).length,
+    missing: all.filter((s) => !s.resolved),
+    resolved: all.filter((s) => s.resolved),
+  });
 });
 
 // ============================================
