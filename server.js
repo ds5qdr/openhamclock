@@ -2067,7 +2067,7 @@ const HELIO_LAYERS = {
   '0304': '[SDO,AIA,AIA,304,1,100]',
   '0171': '[SDO,AIA,AIA,171,1,100]',
   '0094': '[SDO,AIA,AIA,94,1,100]',
-  'HMIIC': '[SDO,HMI,HMI,continuum,1,100]',
+  HMIIC: '[SDO,HMI,HMI,continuum,1,100]',
 };
 
 const fetchFromHelioviewer = async (type, timeoutMs = 20000) => {
@@ -2668,6 +2668,7 @@ let sotaCache = { data: null, timestamp: 0 };
 const SOTA_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 let sotaSummits = { data: null, timestamp: 0 };
 const SOTASUMMITS_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 day
+let sotaEpoch = '';
 
 // SOTA Summits
 // SOTA publishes a CSV of the Summit detail every day. Save this into
@@ -2719,9 +2720,18 @@ app.get('/api/sota/spots', async (req, res) => {
       return res.json(sotaCache.data);
     }
 
+    const ep = await fetch('https://api-db2.sota.org.uk/api/spots/epoch');
+    const epoch = await ep.text();
+
+    // epoch is consistent with previous fetched spots, do not refetch
+    if (epoch == sotaEpoch) {
+      res.set('Cache-Control', 'no-store');
+      return res.json(sotaCache.data);
+    }
+
     checkSummitCache(); // Updates sotaSummits if required
 
-    const response = await fetch('https://api2.sota.org.uk/api/spots/50/all');
+    const response = await fetch('https://api-db2.sota.org.uk/api/spots/50/all/all');
     const data = await response.json();
 
     if (sotaSummits.data) {
@@ -2733,6 +2743,7 @@ app.get('/api/sota/spots', async (req, res) => {
     }
     if (Array.isArray(data) && data.length > 0) {
       const sample = data[0];
+      sotaEpoch = data[0].epoch;
       logDebug('[SOTA] API returned', data.length, 'spots. Sample fields:', Object.keys(sample).join(', '));
     }
 
