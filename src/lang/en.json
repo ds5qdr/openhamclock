@@ -226,8 +226,6 @@
   "app.dxLocation.dxccTitle": "Select a DXCC entity to move the DX target",
   "app.dxLocation.dxccTitleLocked": "Unlock DX position to select a DXCC entity",
   "app.dxLocation.dxccToggleTitle": "Show or hide the DXCC selector",
-  "app.dxLocation.dxccShowButton": "Show DXCC",
-  "app.dxLocation.dxccHideButton": "Hide DXCC",
   "app.dxLocation.dxccClearTitle": "Clear DXCC input",
   "app.dxLocation.beamDir": "Beam Dir:",
   "app.dxLocation.sp": "SP:",

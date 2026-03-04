@@ -13,8 +13,6 @@
   "app.dxLocation.dxccTitle": "DXCC-Eintrag auswählen, um das DX-Ziel zu verschieben",
   "app.dxLocation.dxccTitleLocked": "DX-Position entsperren, um einen DXCC-Eintrag zu wählen",
   "app.dxLocation.dxccToggleTitle": "DXCC-Auswahl ein- oder ausblenden",
-  "app.dxLocation.dxccShowButton": "DXCC zeigen",
-  "app.dxLocation.dxccHideButton": "DXCC ausblenden",
   "app.dxLocation.dxccClearTitle": "DXCC-Eingabe löschen",
   "app.dxLocation.lp": "LP:",
   "app.dxLocation.sp": "SP:",

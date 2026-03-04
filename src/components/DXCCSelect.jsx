@@ -54,6 +54,16 @@ export default function DXCCSelect({ dxLocked, onDXChange, style }) {
     setInputValue(match.label);
   };
 
+  const handleChange = (value) => {
+    setInputValue(value);
+
+    const match = optionMap.get(normalize(value));
+    if (match) {
+      onDXChange({ lat: match.lat, lon: match.lon });
+      setInputValue(match.label);
+    }
+  };
+
   return (
     <div style={{ ...style }}>
       <div style={{ display: 'flex', alignItems: 'stretch', gap: '5px' }}>
@@ -69,7 +79,7 @@ export default function DXCCSelect({ dxLocked, onDXChange, style }) {
               ? t('app.dxLocation.dxccTitleLocked', 'Unlock DX position to select a DXCC entity')
               : t('app.dxLocation.dxccTitle', 'Select a DXCC entity to move the DX target')
           }
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
