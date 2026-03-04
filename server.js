@@ -2720,13 +2720,18 @@ app.get('/api/sota/spots', async (req, res) => {
       return res.json(sotaCache.data);
     }
 
-    const ep = await fetch('https://api-db2.sota.org.uk/api/spots/epoch');
-    const epoch = await ep.text();
-
-    // epoch is consistent with previous fetched spots, do not refetch
-    if (epoch == sotaEpoch) {
-      res.set('Cache-Control', 'no-store');
-      return res.json(sotaCache.data);
+    // Check epoch to avoid unnecessary refetch (wrapped in try/catch so
+    // a failing epoch endpoint doesn't 500 the whole spots route)
+    let epoch = '';
+    try {
+      const ep = await fetch('https://api-db2.sota.org.uk/api/spots/epoch');
+      epoch = await ep.text();
+      if (epoch === sotaEpoch && sotaCache.data) {
+        res.set('Cache-Control', 'no-store');
+        return res.json(sotaCache.data);
+      }
+    } catch (e) {
+      // Epoch check failed — fall through to normal spots fetch
     }
 
     checkSummitCache(); // Updates sotaSummits if required
