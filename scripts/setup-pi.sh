@@ -218,12 +218,26 @@ install_nodejs() {
             exit 1
         fi
 
+        # Download to a temp file with retry support.
+        # Piping curl directly into tar gives no retry opportunity on a
+        # dropped connection; saving to disk first lets curl resume/retry
+        # and keeps extraction separate so errors are easier to diagnose.
         echo -e "${BLUE}  Installing $NODE_TARBALL ...${NC}"
-        curl -fsSL "$NODE_DIST_BASE/$NODE_TARBALL" \
-            | sudo tar -xz -C /usr/local --strip-components=1 || {
-            echo -e "${RED}✗ Failed to download or extract Node.js armv7l binary.${NC}"
+        NODE_TMPFILE=$(mktemp /tmp/nodejs-armv7l-XXXXXX.tar.gz)
+        curl -fsSL \
+            --retry 3 --retry-delay 5 --retry-connrefused \
+            "$NODE_DIST_BASE/$NODE_TARBALL" \
+            -o "$NODE_TMPFILE" || {
+            rm -f "$NODE_TMPFILE"
+            echo -e "${RED}✗ Failed to download Node.js armv7l binary (tried 3 times).${NC}"
             exit 1
         }
+        sudo tar -xz -C /usr/local --strip-components=1 -f "$NODE_TMPFILE" || {
+            rm -f "$NODE_TMPFILE"
+            echo -e "${RED}✗ Failed to extract Node.js armv7l binary.${NC}"
+            exit 1
+        }
+        rm -f "$NODE_TMPFILE"
     else
         # amd64 and arm64 are supported by NodeSource.
         curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | sudo -E bash - || {
