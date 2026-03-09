@@ -2892,7 +2892,8 @@ const DXSPIDER_NODES = [
 const DXSPIDER_SSID = '-56'; // OpenHamClock SSID
 
 function getDxClusterLoginCallsign(preferredCallsign = null) {
-  const candidate = (preferredCallsign || CONFIG.dxClusterCallsign || '').trim();
+  // Strip control characters to prevent telnet command injection via query params
+  const candidate = (preferredCallsign || CONFIG.dxClusterCallsign || '').replace(/[\x00-\x1F\x7F]/g, '').trim();
   if (candidate && candidate.toUpperCase() !== 'N0CALL') {
     // Append default SSID if caller didn't include one
     if (!candidate.includes('-')) {
