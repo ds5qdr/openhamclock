@@ -249,10 +249,11 @@ const connect = () => {
     connected = true;
     connecting = false;
     authenticated = false;
-    reconnectAttempts = 0;
     connectionStartTime = new Date();
     lastDataTime = Date.now();
     buffer = '';
+    // NOTE: reconnectAttempts is NOT reset here — only when spots actually arrive.
+    // This prevents infinite loops on nodes that accept TCP but kick after auth.
     log('CONNECT', `Connected to ${node.name}`);
 
     // Send login after short delay
@@ -313,6 +314,11 @@ const connect = () => {
         if (spot) {
           addSpot(spot);
           resetActivityWatchdog(); // Got a spot, connection is healthy
+          // Connection proved healthy — reset the failover counter
+          if (reconnectAttempts > 0) {
+            log('CONNECT', `Connection healthy (spots flowing), resetting failover counter`);
+            reconnectAttempts = 0;
+          }
         }
         continue;
       }
@@ -438,13 +444,19 @@ const handleDisconnect = () => {
     return;
   }
 
+  // Detect rapid disconnect (kicked within seconds of connecting)
+  const connectionDuration = connectionStartTime ? Date.now() - connectionStartTime.getTime() : 0;
+  if (connectionDuration > 0 && connectionDuration < 15000) {
+    log('RECONNECT', `Rapid disconnect from ${currentNode?.name} after ${Math.round(connectionDuration / 1000)}s (likely auth rejection or SSID conflict)`);
+  }
+
   reconnectAttempts++;
 
   if (reconnectAttempts >= CONFIG.maxReconnectAttempts) {
     // Try next node
     currentNodeIndex = (currentNodeIndex + 1) % CONFIG.nodes.length;
     reconnectAttempts = 0;
-    log('FAILOVER', `Switching to node: ${CONFIG.nodes[currentNodeIndex].name}`);
+    log('FAILOVER', `${CONFIG.maxReconnectAttempts} consecutive failures — switching to node: ${CONFIG.nodes[currentNodeIndex].name}`);
   }
 
   log('RECONNECT', `Attempting reconnect in ${CONFIG.reconnectDelayMs}ms (attempt ${reconnectAttempts})`);
