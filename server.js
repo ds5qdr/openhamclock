@@ -3019,7 +3019,6 @@ function parseDXSpiderSpotLine(line) {
 const CUSTOM_DX_RETENTION_MS = 30 * 60 * 1000;
 const CUSTOM_DX_MAX_SPOTS = 500;
 const CUSTOM_DX_RECONNECT_DELAY_MS = 10000;
-const CUSTOM_DX_STALE_MS = 5 * 60 * 1000; // Force reconnect after 5 min with no data
 const CUSTOM_DX_KEEPALIVE_MS = 30000;
 const CUSTOM_DX_IDLE_TIMEOUT = 15 * 60 * 1000; // Reap sessions idle for 15 minutes
 const customDxSessions = new Map();
@@ -3119,13 +3118,11 @@ function connectCustomSession(session) {
   session.loginSent = false;
   session.commandSent = false;
   client.setTimeout(0);
-  client.setKeepAlive(true, 60000); // OS-level TCP keepalive probes every 60s
 
   client.connect(session.node.port, session.node.host, () => {
     session.connected = true;
     session.connecting = false;
     session.lastConnectedAt = Date.now();
-    session.lastDataAt = Date.now();
     logDebug(
       `[DX Cluster] DX Spider: connected to ${session.node.host}:${session.node.port} as ${session.loginCallsign}`,
     );
@@ -3140,15 +3137,6 @@ function connectCustomSession(session) {
 
     session.keepAliveTimer = setInterval(() => {
       if (session.client && session.connected) {
-        // Force reconnect if no data received for CUSTOM_DX_STALE_MS
-        const silentMs = Date.now() - (session.lastDataAt || 0);
-        if (silentMs > CUSTOM_DX_STALE_MS) {
-          logWarn(
-            `[DX Cluster] No data from ${session.node.host} in ${Math.round(silentMs / 60000)} min — forcing reconnect`,
-          );
-          handleCustomSessionDisconnect(session);
-          return;
-        }
         try {
           session.client.write('\r\n');
         } catch (e) {}
@@ -3158,7 +3146,6 @@ function connectCustomSession(session) {
 
   client.on('data', (data) => {
     session.buffer += data.toString();
-    session.lastDataAt = Date.now();
 
     // Login prompt detection
     if (
@@ -3210,10 +3197,7 @@ function connectCustomSession(session) {
     }
   });
 
-  client.on('timeout', () => {
-    logWarn(`[DX Cluster] Socket timeout for ${session.node.host} — reconnecting`);
-    handleCustomSessionDisconnect(session);
-  });
+  client.on('timeout', () => {});
 
   client.on('error', (err) => {
     if (
@@ -3253,7 +3237,6 @@ function getOrCreateCustomSession(node, userCallsign = null) {
       reconnectTimer: null,
       keepAliveTimer: null,
       lastConnectedAt: 0,
-      lastDataAt: 0,
       lastUsedAt: Date.now(),
       cleanupTimer: null,
     };
