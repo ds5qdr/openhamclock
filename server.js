@@ -2900,7 +2900,7 @@ app.get('/api/hamqsl/conditions', async (req, res) => {
 // The 'proxy' source uses our DX Spider Proxy microservice
 
 // DX Spider Proxy URL (sibling service on Railway or external)
-const DXSPIDER_PROXY_URL = process.env.DXSPIDER_PROXY_URL || 'https://dxspider-proxy-production-1ec7.up.railway.app';
+const DXSPIDER_PROXY_URL = process.env.DXSPIDER_PROXY_URL || 'https://spider-production-1ec7.up.railway.app';
 
 // Cache for DX Spider telnet spots (to avoid excessive connections)
 let dxSpiderCache = { spots: [], timestamp: 0 };
