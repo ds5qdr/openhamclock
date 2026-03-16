@@ -80,10 +80,9 @@ export const useWeatherAlerts = (location) => {
         const lat = location.lat.toFixed(4);
         const lon = location.lon.toFixed(4);
 
-        const response = await fetch(`https://api.weather.gov/alerts/active?point=${lat},${lon}&limit=10`, {
+        const response = await fetch(`https://api.weather.gov/alerts/active?point=${lat},${lon}&status=actual`, {
           headers: {
             'User-Agent': 'OpenHamClock (https://github.com/accius/openhamclock)',
-            Accept: 'application/geo+json',
           },
         });
 
@@ -139,9 +138,9 @@ export const useWeatherAlerts = (location) => {
       }
     };
 
-    // Debounce location changes (10s, same as weather)
+    // Debounce location changes (3s — shorter than weather since NWS API is fast and free)
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(fetchAlerts, 10000);
+    debounceRef.current = setTimeout(fetchAlerts, 3000);
 
     const interval = setInterval(fetchAlerts, POLL_INTERVAL);
     return () => {
