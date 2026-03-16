@@ -20,6 +20,7 @@ export const WeatherPanel = ({
   allUnits = { dist: 'imperial', temp: 'imperial', press: 'imperial' },
   nodeId,
   weatherData, // Optional: pre-fetched { data, loading, error } from useWeather
+  alerts, // Optional: { alerts: [], loading } from useWeatherAlerts
 }) => {
   const { t } = useTranslation();
   const [weatherExpanded, setWeatherExpanded] = useState(() => {
@@ -206,6 +207,87 @@ export const WeatherPanel = ({
         >
           ⚠ {getErrorMessage(error.message)}
           {error.retryIn ? t('weather.error.retry', { seconds: error.retryIn }) : ''}
+        </div>
+      )}
+
+      {/* Weather alerts (NWS) */}
+      {alerts?.alerts?.length > 0 && (
+        <div style={{ marginTop: '6px' }}>
+          {alerts.alerts.slice(0, 3).map((alert, i) => {
+            const expiresMin = alert.expiresMs != null ? Math.max(0, Math.floor(alert.expiresMs / 60000)) : null;
+            const expiresStr =
+              expiresMin != null
+                ? expiresMin <= 0
+                  ? 'Expired'
+                  : expiresMin < 60
+                    ? `${expiresMin}m`
+                    : `${Math.floor(expiresMin / 60)}h${expiresMin % 60}m`
+                : '';
+            return (
+              <div
+                key={alert.id || i}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '6px',
+                  padding: '4px 6px',
+                  marginBottom: '2px',
+                  background: `${alert.color}15`,
+                  border: `1px solid ${alert.color}40`,
+                  borderRadius: '4px',
+                  fontSize: '10px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  lineHeight: 1.3,
+                }}
+                title={alert.headline || alert.event}
+              >
+                <span style={{ fontSize: '12px', flexShrink: 0 }}>{alert.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      color: alert.color,
+                      fontWeight: '700',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {alert.event}
+                  </div>
+                  {alert.headline && (
+                    <div
+                      style={{
+                        color: 'var(--text-secondary)',
+                        fontSize: '9px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {alert.headline}
+                    </div>
+                  )}
+                </div>
+                {expiresStr && (
+                  <span
+                    style={{
+                      color: expiresMin != null && expiresMin <= 15 ? '#FF3300' : 'var(--text-muted)',
+                      fontSize: '9px',
+                      flexShrink: 0,
+                      fontWeight: expiresMin != null && expiresMin <= 15 ? '700' : 'normal',
+                    }}
+                  >
+                    {expiresStr}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          {alerts.alerts.length > 3 && (
+            <div style={{ fontSize: '9px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '2px' }}>
+              +{alerts.alerts.length - 3} more alert{alerts.alerts.length - 3 > 1 ? 's' : ''}
+            </div>
+          )}
         </div>
       )}
 

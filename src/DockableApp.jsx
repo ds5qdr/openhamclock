@@ -69,6 +69,8 @@ export const DockableApp = ({
   // Weather
   localWeather,
   dxWeather,
+  localAlerts,
+  dxAlerts,
   showDxWeather,
 
   // Space weather & solar
@@ -472,7 +474,7 @@ export const DockableApp = ({
         </div>
       </div>
 
-      <WeatherPanel weatherData={localWeather} allUnits={config.allUnits} nodeId={nodeId} />
+      <WeatherPanel weatherData={localWeather} allUnits={config.allUnits} nodeId={nodeId} alerts={localAlerts} />
     </div>
   );
 
@@ -590,7 +592,9 @@ export const DockableApp = ({
           </div>
         </div>
 
-        {showDxWeather && <WeatherPanel weatherData={dxWeather} allUnits={config.allUnits} nodeId={nodeId} />}
+        {showDxWeather && (
+          <WeatherPanel weatherData={dxWeather} allUnits={config.allUnits} nodeId={nodeId} alerts={dxAlerts} />
+        )}
       </div>
     );
   };
@@ -990,6 +994,8 @@ export const DockableApp = ({
       showDxWeather,
       localWeather,
       dxWeather,
+      localAlerts,
+      dxAlerts,
       solarIndices,
       propagation,
       bandConditions,

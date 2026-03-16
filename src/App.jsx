@@ -25,6 +25,7 @@ import {
   useWWBOTASpots,
   useContests,
   useWeather,
+  useWeatherAlerts,
   usePropagation,
   useMySpots,
   useDXpeditions,
@@ -302,6 +303,8 @@ const App = () => {
   const satellites = useSatellites(config.location);
   const localWeather = useWeather(config.location, config.allUnits);
   const dxWeather = useWeather(dxLocation, config.allUnits);
+  const localAlerts = useWeatherAlerts(config.location);
+  const dxAlerts = useWeatherAlerts(dxLocation);
   const pskReporter = usePSKReporter(config.callsign, {
     minutes: config.lowMemoryMode ? 5 : 30,
     enabled: pskFilters?.filterMode === 'grid' ? !!config.locator : config.callsign !== 'N0CALL',
@@ -471,6 +474,8 @@ const App = () => {
     dxSunTimes,
     localWeather,
     dxWeather,
+    localAlerts,
+    dxAlerts,
     spaceWeather,
     solarIndices,
     bandConditions,

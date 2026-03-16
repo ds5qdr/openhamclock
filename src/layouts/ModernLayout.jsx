@@ -40,6 +40,8 @@ export default function ModernLayout(props) {
     localDate,
     localWeather,
     dxWeather,
+    localAlerts,
+    dxAlerts,
     spaceWeather,
     solarIndices,
     use12Hour,
@@ -215,7 +217,7 @@ export default function ModernLayout(props) {
           <span style={{ color: 'var(--accent-purple)', fontWeight: '600' }}>{deSunTimes.sunset}</span>
         </div>
       </div>
-      <WeatherPanel weatherData={localWeather} allUnits={config.allUnits} />
+      <WeatherPanel weatherData={localWeather} allUnits={config.allUnits} alerts={localAlerts} />
     </div>
   );
 
@@ -320,7 +322,7 @@ export default function ModernLayout(props) {
           <span style={{ color: 'var(--accent-purple)', fontWeight: '600' }}>{dxSunTimes.sunset}</span>
         </div>
       </div>
-      {showDxWeather && <WeatherPanel weatherData={dxWeather} allUnits={config.allUnits} />}
+      {showDxWeather && <WeatherPanel weatherData={dxWeather} allUnits={config.allUnits} alerts={dxAlerts} />}
     </div>
   );
 
