@@ -182,7 +182,7 @@ module.exports = function (app, ctx) {
     const txPower = parseFloat(power) || 100;
     const antennaKey = antenna || 'isotropic';
     const txGain = ANTENNA_PROFILES[antennaKey]?.gain ?? 0;
-    const signalMarginDb = calculateSignalMargin(txMode, txPower);
+    const signalMarginDb = calculateSignalMargin(txMode, txPower, txGain);
 
     const useITURHFProp = ITURHFPROP_URL !== null;
     logDebug(
@@ -308,13 +308,15 @@ module.exports = function (app, ctx) {
               iturhfpropMuf = hourEntry.muf;
             }
 
-            // Map each frequency result to a band
+            // Map each frequency result to a band, applying signal margin
+            // P.533 BCR assumes SSB @ 100W isotropic. adjustReliability corrects for
+            // the user's actual mode (FT8 = +34dB), power, and antenna gain.
             const hourBandReliability = {};
             for (const freqResult of hourEntry.frequencies || []) {
               const band = freqToBand(freqResult.freq);
               if (band) {
-                // P.533-14 BCR (Basic Circuit Reliability) is the definitive metric
-                hourBandReliability[band] = Math.max(0, Math.min(99, Math.round(freqResult.reliability)));
+                const raw = Math.max(0, Math.min(99, Math.round(freqResult.reliability)));
+                hourBandReliability[band] = adjustReliability(raw, signalMarginDb);
               }
             }
 
@@ -363,18 +365,13 @@ module.exports = function (app, ctx) {
           currentBands = bands
             .map((band, idx) => {
               const ituBand = singleHour.bands?.[band];
+              const rel = ituBand ? adjustReliability(Math.round(ituBand.reliability), signalMarginDb) : 0;
               return {
                 band,
                 freq: bandFreqs[idx],
-                reliability: ituBand ? Math.round(ituBand.reliability) : 0,
-                snr: calculateSNR(ituBand?.reliability || 0),
-                status: ituBand
-                  ? ituBand.reliability >= 70
-                    ? 'GOOD'
-                    : ituBand.reliability >= 40
-                      ? 'FAIR'
-                      : 'POOR'
-                  : 'CLOSED',
+                reliability: rel,
+                snr: calculateSNR(rel),
+                status: rel >= 70 ? 'GOOD' : rel >= 40 ? 'FAIR' : rel > 0 ? 'POOR' : 'CLOSED',
               };
             })
             .sort((a, b) => b.reliability - a.reliability);
@@ -503,9 +500,11 @@ module.exports = function (app, ctx) {
     const gridSize = Math.max(5, Math.min(20, parseInt(req.query.grid) || 10)); // 5-20° grid
     const txMode = (req.query.mode || 'SSB').toUpperCase();
     const txPower = parseFloat(req.query.power) || 100;
-    const signalMarginDb = calculateSignalMargin(txMode, txPower);
+    const antennaKey = req.query.antenna || 'isotropic';
+    const txGain = ANTENNA_PROFILES[antennaKey]?.gain ?? 0;
+    const signalMarginDb = calculateSignalMargin(txMode, txPower, txGain);
 
-    const cacheKey = `${deLat.toFixed(0)}:${deLon.toFixed(0)}:${freq}:${gridSize}:${txMode}:${txPower}`;
+    const cacheKey = `${deLat.toFixed(0)}:${deLon.toFixed(0)}:${freq}:${gridSize}:${txMode}:${txPower}:${antennaKey}`;
     const now = Date.now();
 
     if (PROP_HEATMAP_CACHE[cacheKey] && now - PROP_HEATMAP_CACHE[cacheKey].ts < PROP_HEATMAP_TTL) {
@@ -762,17 +761,39 @@ module.exports = function (app, ctx) {
   };
 
   /**
-   * Calculate signal margin in dB from mode and power
-   * Used to adjust propagation reliability predictions
+   * Calculate signal margin in dB from mode, power, and antenna gain
    * @param {string} mode - Operating mode (SSB, CW, FT8, etc.)
    * @param {number} powerWatts - TX power in watts
-   * @returns {number} Signal margin in dB relative to SSB at 100W
+   * @param {number} antGain - Antenna gain in dBi (0 = isotropic)
+   * @returns {number} Signal margin in dB relative to SSB at 100W isotropic
    */
-  function calculateSignalMargin(mode, powerWatts) {
+  function calculateSignalMargin(mode, powerWatts, antGain = 0) {
     const modeAdv = MODE_ADVANTAGE_DB[mode] || 0;
     const power = Math.max(0.01, powerWatts || 100);
     const powerOffset = 10 * Math.log10(power / 100); // dB relative to 100W
-    return modeAdv + powerOffset;
+    return modeAdv + powerOffset + (antGain || 0);
+  }
+
+  /**
+   * Apply signal margin to a base reliability value.
+   * P.533 computes BCR assuming SSB at a fixed power/antenna. This adjusts
+   * the reliability for the user's actual mode (FT8 decodes 34dB weaker than
+   * SSB), power (1kW = +10dB over 100W), and antenna gain.
+   * Uses logistic scaling to stay within 0-99 bounds.
+   */
+  function adjustReliability(baseRel, signalMarginDb) {
+    if (signalMarginDb === 0 || baseRel <= 0) return baseRel;
+    let rel = baseRel;
+    const factor = signalMarginDb / 15; // normalized: ±1 at ±15dB
+    if (factor > 0) {
+      // Boost: push toward 99. Marginal paths benefit most.
+      const headroom = 99 - rel;
+      rel += headroom * (1 - Math.exp(-factor * 1.2));
+    } else {
+      // Penalty: push toward 0.
+      rel -= rel * (1 - Math.exp(factor * 1.2));
+    }
+    return Math.max(0, Math.min(99, Math.round(rel)));
   }
 
   // Built-in reliability calculation (fallback when ITURHFProp unavailable)
