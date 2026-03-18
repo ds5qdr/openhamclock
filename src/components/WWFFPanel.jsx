@@ -22,7 +22,6 @@ export const WWFFPanel = ({
   return (
     <ActivatePanel
       name={'WWFF'}
-      shade={'#a3f3a3'}
       data={data}
       loading={loading}
       lastUpdated={lastUpdated}
