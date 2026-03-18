@@ -2,11 +2,15 @@
  * PropagationPanel Component (VOACAP)
  * Toggleable between heatmap chart, bar chart, and band conditions view
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatDistance } from '../utils/geo.js';
+import { saveConfig, loadConfig } from '../utils/config.js';
 import BandHealthPanel from './BandHealthPanel.jsx';
 import useAutoRotate from '../hooks/app/useAutoRotate.js';
+
+const MODES = ['SSB', 'CW', 'FT8', 'FT4', 'WSPR', 'JS8', 'RTTY', 'AM'];
+const POWERS = [5, 10, 25, 50, 100, 200, 500, 1000, 1500];
 
 export const PropagationPanel = ({
   propagation,
@@ -19,6 +23,25 @@ export const PropagationPanel = ({
   clusterFilters,
 }) => {
   const { t } = useTranslation();
+
+  // Antenna profiles fetched from server
+  const [antennaProfiles, setAntennaProfiles] = useState(null);
+  useEffect(() => {
+    fetch('/api/propagation/antennas')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) setAntennaProfiles(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Update propagation config (mode, power, antenna) and persist
+  const updatePropConfig = useCallback((updates) => {
+    const cfg = loadConfig();
+    cfg.propagation = { ...cfg.propagation, ...updates };
+    saveConfig(cfg);
+  }, []);
+
   // Load view mode preference from localStorage
   const [internalViewMode, setViewMode] = useState(() => {
     try {
@@ -447,6 +470,94 @@ export const PropagationPanel = ({
                 }}
               >
                 🔬 ITU-R P.533
+              </span>
+            )}
+          </div>
+
+          {/* Inline Mode / Power / Antenna controls */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '4px',
+              alignItems: 'center',
+              padding: '3px 8px',
+              marginBottom: '4px',
+              fontSize: '10px',
+              flexWrap: 'wrap',
+            }}
+          >
+            {/* Mode */}
+            <select
+              value={propConfig.mode || 'SSB'}
+              onChange={(e) => updatePropConfig({ mode: e.target.value })}
+              style={{
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '3px',
+                padding: '2px 4px',
+                fontSize: '10px',
+                fontFamily: 'JetBrains Mono, monospace',
+              }}
+            >
+              {MODES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+
+            {/* Power */}
+            <select
+              value={propConfig.power || 100}
+              onChange={(e) => updatePropConfig({ power: parseInt(e.target.value) })}
+              style={{
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '3px',
+                padding: '2px 4px',
+                fontSize: '10px',
+                fontFamily: 'JetBrains Mono, monospace',
+              }}
+            >
+              {POWERS.map((p) => (
+                <option key={p} value={p}>
+                  {p}W
+                </option>
+              ))}
+            </select>
+
+            {/* Antenna */}
+            {antennaProfiles && (
+              <select
+                value={propConfig.antenna || 'isotropic'}
+                onChange={(e) => updatePropConfig({ antenna: e.target.value })}
+                style={{
+                  background: 'var(--bg-tertiary)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '3px',
+                  padding: '2px 4px',
+                  fontSize: '10px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  maxWidth: '110px',
+                }}
+              >
+                {Object.entries(antennaProfiles).map(([key, profile]) => (
+                  <option key={key} value={key}>
+                    {profile.name} ({profile.gain > 0 ? '+' : ''}
+                    {profile.gain}dBi)
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* Signal margin indicator */}
+            {propagation?.signalMargin != null && (
+              <span style={{ color: propagation.signalMargin >= 0 ? '#00ff88' : '#ff6666', marginLeft: 'auto' }}>
+                {propagation.signalMargin > 0 ? '+' : ''}
+                {propagation.signalMargin}dB
               </span>
             )}
           </div>

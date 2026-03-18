@@ -42,10 +42,12 @@ module.exports = function (app, ctx) {
   /**
    * Fetch base prediction from ITURHFProp service
    */
-  async function fetchITURHFPropPrediction(txLat, txLon, rxLat, rxLon, ssn, month, hour) {
+  async function fetchITURHFPropPrediction(txLat, txLon, rxLat, rxLon, ssn, month, hour, txPower, txGain) {
     if (!ITURHFPROP_URL) return null;
 
-    const cacheKey = `${txLat.toFixed(1)},${txLon.toFixed(1)}-${rxLat.toFixed(1)},${rxLon.toFixed(1)}-${ssn}-${month}-${hour}`;
+    const pw = Math.round(txPower || 100);
+    const gn = Math.round((txGain || 0) * 10) / 10;
+    const cacheKey = `${txLat.toFixed(1)},${txLon.toFixed(1)}-${rxLat.toFixed(1)},${rxLon.toFixed(1)}-${ssn}-${month}-${hour}-${pw}-${gn}`;
     const now = Date.now();
 
     // Check cache
@@ -54,7 +56,7 @@ module.exports = function (app, ctx) {
     }
 
     try {
-      const url = `${ITURHFPROP_URL}/api/bands?txLat=${txLat}&txLon=${txLon}&rxLat=${rxLat}&rxLon=${rxLon}&ssn=${ssn}&month=${month}&hour=${hour}`;
+      const url = `${ITURHFPROP_URL}/api/bands?txLat=${txLat}&txLon=${txLon}&rxLat=${rxLat}&rxLon=${rxLon}&ssn=${ssn}&month=${month}&hour=${hour}&txPower=${pw}&txGain=${gn}`;
 
       // Create abort controller for timeout
       const controller = new AbortController();
@@ -100,10 +102,12 @@ module.exports = function (app, ctx) {
     maxAge: 10 * 60 * 1000, // 10 minutes — SSN/month don't change faster than this
   };
 
-  async function fetchITURHFPropHourly(txLat, txLon, rxLat, rxLon, ssn, month) {
+  async function fetchITURHFPropHourly(txLat, txLon, rxLat, rxLon, ssn, month, txPower, txGain) {
     if (!ITURHFPROP_URL) return null;
 
-    const cacheKey = `hourly-${txLat.toFixed(1)},${txLon.toFixed(1)}-${rxLat.toFixed(1)},${rxLon.toFixed(1)}-${ssn}-${month}`;
+    const pw = Math.round(txPower || 100);
+    const gn = Math.round((txGain || 0) * 10) / 10;
+    const cacheKey = `hourly-${txLat.toFixed(1)},${txLon.toFixed(1)}-${rxLat.toFixed(1)},${rxLon.toFixed(1)}-${ssn}-${month}-${pw}-${gn}`;
     const now = Date.now();
 
     if (
@@ -114,7 +118,7 @@ module.exports = function (app, ctx) {
     }
 
     try {
-      const url = `${ITURHFPROP_URL}/api/predict/hourly?txLat=${txLat}&txLon=${txLon}&rxLat=${rxLat}&rxLon=${rxLon}&ssn=${ssn}&month=${month}`;
+      const url = `${ITURHFPROP_URL}/api/predict/hourly?txLat=${txLat}&txLon=${txLon}&rxLat=${rxLat}&rxLon=${rxLon}&ssn=${ssn}&month=${month}&txPower=${pw}&txGain=${gn}`;
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s for 24-hour calc
@@ -145,12 +149,39 @@ module.exports = function (app, ctx) {
   // PROPAGATION PREDICTION API (ITU-R P.533-14 via ITURHFProp)
   // ============================================
 
+  // Antenna profiles: key → { name, gain (dBi) }
+  // Gain is relative to isotropic (dBi). P.533 uses dBi for both TX and RX antennas.
+  const ANTENNA_PROFILES = {
+    isotropic: { name: 'Isotropic', gain: 0 },
+    dipole: { name: 'Dipole', gain: 2.15 },
+    'vert-qw': { name: 'Vertical 1/4λ', gain: 1.5 },
+    'vert-5/8': { name: 'Vertical 5/8λ', gain: 3.2 },
+    invv: { name: 'Inverted V', gain: 1.8 },
+    ocfd: { name: 'OCFD / Windom', gain: 2.5 },
+    efhw: { name: 'EFHW', gain: 2.0 },
+    g5rv: { name: 'G5RV', gain: 2.0 },
+    yagi2: { name: 'Yagi 2-el', gain: 5.5 },
+    yagi3: { name: 'Yagi 3-el', gain: 8.0 },
+    yagi5: { name: 'Yagi 5-el', gain: 10.5 },
+    hexbeam: { name: 'Hex Beam', gain: 5.0 },
+    cobweb: { name: 'Cobweb', gain: 4.0 },
+    loop: { name: 'Magnetic Loop', gain: -1.0 },
+    longwire: { name: 'Long Wire / Random', gain: 0.5 },
+  };
+
+  // Expose profiles via API so the frontend can enumerate them
+  app.get('/api/propagation/antennas', (req, res) => {
+    res.json(ANTENNA_PROFILES);
+  });
+
   app.get('/api/propagation', async (req, res) => {
-    const { deLat, deLon, dxLat, dxLon, mode, power } = req.query;
+    const { deLat, deLon, dxLat, dxLon, mode, power, antenna } = req.query;
 
     // Calculate signal margin from mode + power
     const txMode = (mode || 'SSB').toUpperCase();
     const txPower = parseFloat(power) || 100;
+    const antennaKey = antenna || 'isotropic';
+    const txGain = ANTENNA_PROFILES[antennaKey]?.gain ?? 0;
     const signalMarginDb = calculateSignalMargin(txMode, txPower);
 
     const useITURHFProp = ITURHFPROP_URL !== null;
@@ -161,7 +192,7 @@ module.exports = function (app, ctx) {
       'to DX:',
       dxLat,
       dxLon,
-      `[${txMode} @ ${txPower}W, margin: ${signalMarginDb.toFixed(1)}dB]`,
+      `[${txMode} @ ${txPower}W, ${ANTENNA_PROFILES[antennaKey]?.name || antennaKey} (${txGain > 0 ? '+' : ''}${txGain}dBi), margin: ${signalMarginDb.toFixed(1)}dB]`,
     );
 
     try {
@@ -249,7 +280,16 @@ module.exports = function (app, ctx) {
 
       // Try ITURHFProp 24-hour prediction first
       if (useITURHFProp) {
-        const hourlyData = await fetchITURHFPropHourly(de.lat, de.lon, dx.lat, dx.lon, ssn, currentMonth);
+        const hourlyData = await fetchITURHFPropHourly(
+          de.lat,
+          de.lon,
+          dx.lat,
+          dx.lon,
+          ssn,
+          currentMonth,
+          txPower,
+          txGain,
+        );
 
         if (hourlyData?.hourly?.length === 24) {
           logDebug('[Propagation] Using ITURHFProp P.533-14 for all 24 hours');
@@ -312,6 +352,8 @@ module.exports = function (app, ctx) {
           ssn,
           currentMonth,
           currentHour,
+          txPower,
+          txGain,
         );
         if (singleHour?.bands) {
           logDebug('[Propagation] ITURHFProp hourly unavailable, using single-hour + built-in for 24h chart');
@@ -400,6 +442,7 @@ module.exports = function (app, ctx) {
         hourlyPredictions: predictions,
         mode: txMode,
         power: txPower,
+        antenna: { key: antennaKey, name: ANTENNA_PROFILES[antennaKey]?.name || antennaKey, gain: txGain },
         signalMargin: Math.round(signalMarginDb * 10) / 10,
         iturhfprop: {
           enabled: useITURHFProp,
