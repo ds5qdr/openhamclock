@@ -6,6 +6,7 @@ const normalizeCall = (value) =>
 const normalizeFreq = (value) => String(value == null ? '' : value).trim();
 
 export const buildDXSpotKey = (spot = {}) => {
+  if (!spot) return '';
   const id = typeof spot.id === 'string' ? spot.id.trim() : '';
   if (id) return id;
 
@@ -19,6 +20,7 @@ export const buildDXSpotKey = (spot = {}) => {
 };
 
 export const matchesDXSpotPath = (spot, path) => {
+  if (!spot || !path) return false;
   const spotKey = buildDXSpotKey(spot);
   const pathKey = buildDXSpotKey(path);
 

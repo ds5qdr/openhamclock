@@ -47,4 +47,14 @@ describe('dxClusterSpotMatcher', () => {
     expect(() => matchesDXSpotPath(spot, path)).not.toThrow();
     expect(matchesDXSpotPath(spot, path)).toBe(true);
   });
+
+  it('returns false (no crash) when either argument is null', () => {
+    const spot = { call: 'W1AW', freq: '14.074', spotter: 'K1ABC' };
+    expect(() => matchesDXSpotPath(null, spot)).not.toThrow();
+    expect(matchesDXSpotPath(null, spot)).toBe(false);
+    expect(() => matchesDXSpotPath(spot, null)).not.toThrow();
+    expect(matchesDXSpotPath(spot, null)).toBe(false);
+    expect(() => buildDXSpotKey(null)).not.toThrow();
+    expect(buildDXSpotKey(null)).toBe('');
+  });
 });
