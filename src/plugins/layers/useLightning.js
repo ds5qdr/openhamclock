@@ -3,8 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { addMinimizeToggle } from './addMinimizeToggle.js';
 import { makeDraggable } from './makeDraggable.js';
 
-import './../../lang/i18n';
-
 // Lightning Detection Plugin - Real-time lightning strike visualization
 // Data source: Blitzortung.org WebSocket API
 // Update: Real-time via WebSocket
@@ -71,6 +69,7 @@ function getStrikeColor(ageMinutes) {
 }
 
 export function useLayer({ enabled = false, opacity = 0.9, map = null, lowMemoryMode = false, allUnits }) {
+  const { t } = useTranslation();
   const [strikeMarkers, setStrikeMarkers] = useState([]);
   const [lightningData, setLightningData] = useState([]);
   const [statsControl, setStatsControl] = useState(null);
@@ -89,8 +88,6 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null, lowMemory
   const STRIKE_RETENTION_MS = 1800000; // 30 min
 
   const unitsStr = allUnits.dist === 'metric' ? 'km' : 'miles';
-
-  const { t } = useTranslation();
 
   // Fetch WebSocket key from Blitzortung (fallback to 111)
   useEffect(() => {
@@ -458,7 +455,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null, lowMemory
         const div = L.DomUtil.create('div', 'lightning-stats', panelWrapper);
 
         div.innerHTML = `
-          <div class="floating-panel-header">⚡️ { t('plugins.layers.lightning.name')}</div>
+          <div class="floating-panel-header">⚡️ ${t('plugins.layers.lightning.name')}</div>
           <div style="opacity: 0.7; font-size: 10px;">Connecting...</div>
         `;
 
@@ -547,13 +544,13 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null, lowMemory
 
     const contentHTML = `
       <table style="width: 100%; font-size: 11px;">
-        <tr><td>Fresh (&lt;1 min):</td><td style="text-align: right; color: var(--accent-amber);">${fresh}</td></tr>
-        <tr><td>Recent (&lt;5 min):</td><td style="text-align: right; color: var(--accent-amber-dim);">${recent}</td></tr>
-        <tr><td>Total (30 min):</td><td style="text-align: right; color: var(--accent-red);">${total}</td></tr>
+        <tr><td>${t('plugins.layers.lightning.fresh')}:</td><td style="text-align: right; color: var(--accent-amber);">${fresh}</td></tr>
+        <tr><td>${t('plugins.layers.lightning.recent')}:</td><td style="text-align: right; color: var(--accent-amber-dim);">${recent}</td></tr>
+        <tr><td>${t('plugins.layers.lightning.total')}:</td><td style="text-align: right; color: var(--accent-red);">${total}</td></tr>
         <tr><td colspan="2" style="padding-top: 8px; border-top: 1px solid var(--border-color);"></td></tr>
-        <tr><td>Avg Intensity:</td><td style="text-align: right;">${avgIntensity.toFixed(1)} kA</td></tr>
-        <tr><td>Positive:</td><td style="text-align: right; color: var(--accent-amber);">+${positiveStrikes}</td></tr>
-        <tr><td>Negative:</td><td style="text-align: right; color: var(--accent-cyan);">-${negativeStrikes}</td></tr>
+        <tr><td>${t('plugins.layers.lightning.avgIntensity')}:</td><td style="text-align: right;">${avgIntensity.toFixed(1)} kA</td></tr>
+        <tr><td>${t('plugins.layers.lightning.positive')}:</td><td style="text-align: right; color: var(--accent-amber);">+${positiveStrikes}</td></tr>
+        <tr><td>${t('plugins.layers.lightning.negative')}:</td><td style="text-align: right; color: var(--accent-cyan);">-${negativeStrikes}</td></tr>
       </table>
       <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color); font-size: 9px; color: var(--text-muted); text-align: center;">
         Real-time via Blitzortung.org
@@ -698,7 +695,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null, lowMemory
         const div = L.DomUtil.create('div', 'lightning-proximity', panelWrapper);
 
         // Unfortunately, to fit both km and miles in the header we need to override the font size
-        div.innerHTML = `<div class="floating-panel-header" style="font-size: 11px">📍 Nearby Strikes(30km/18.6miles)</div><div style="opacity: 0.7; font-size: 10px; text-align: center;">No recent strikes</div>`;
+        div.innerHTML = `<div class="floating-panel-header" style="font-size: 11px">📍 ${t('plugins.layers.lightning.nearbyStrikes')}</div><div style="opacity: 0.7; font-size: 10px; text-align: center;">No recent strikes</div>`;
 
         // Prevent map interaction
         L.DomEvent.disableClickPropagation(div);
@@ -849,8 +846,8 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null, lowMemory
     if (nearbyStrikes.length === 0) {
       contentHTML = `
         <div style="font-size: 10px; text-align: center;">
-          ✅ No strikes within 30km (18.6 miles)<br/>
-          <span style="font-size: 9px; color: var(--text-muted);">All clear</span>
+          ✅ ${t('plugins.layers.lightning.nearbyNoStrikes')}<br/>
+          <span style="font-size: 9px; color: var(--text-muted);">${t('plugins.layers.lightning.allClear')}</span>
         </div>
       `;
     } else {
