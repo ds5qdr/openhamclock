@@ -145,6 +145,15 @@ export const WorldMap = ({
   const rotatorEnabledRef = useRef(rotatorControlEnabled);
   const deRef = useRef(deLocation);
 
+  // Azimuthal overlay Leaflet map (from AzimuthalMap component)
+  const azimuthalMapRef = useRef(null);
+  const [azimuthalMapReady, setAzimuthalMapReady] = useState(false);
+
+  const handleAzimuthalMapReady = useCallback((map) => {
+    azimuthalMapRef.current = map;
+    setAzimuthalMapReady(!!map);
+  }, []);
+
   // DX highlight state (style existing polylines via refs; no layer rebuilds)
   const dxLineIndexRef = useRef(new Map());
   const dxHighlightKeyRef = useRef('');
@@ -367,7 +376,12 @@ export const WorldMap = ({
     }
   };
   const storedSettings = getStoredMapSettings();
-  const [mapStyle, setMapStyle] = useState(storedSettings.mapStyle || 'dark');
+  // Migration: saved isAzimuthal → split into projection + style
+  const initialStyle = storedSettings.isAzimuthal ? 'dark' : storedSettings.mapStyle || 'dark';
+  const initialProjection = storedSettings.isAzimuthal ? 'azimuthal' : storedSettings.mapProjection || 'mercator';
+  const [mapStyle, setMapStyle] = useState(initialStyle);
+  const [mapProjection, setMapProjection] = useState(initialProjection);
+  const isAzimuthal = mapProjection === 'azimuthal';
   const [bandColorVersion, setBandColorVersion] = useState(0);
   const [editingBand, setEditingBand] = useState(null);
   const [editingColor, setEditingColor] = useState('#ff6666');
@@ -520,6 +534,7 @@ export const WorldMap = ({
         JSON.stringify({
           ...existing,
           mapStyle,
+          mapProjection,
           center: mapView.center,
           zoom: mapView.zoom,
           wheelPxPerZoomLevel: getScaledZoomLevel(mouseZoom),
@@ -528,7 +543,7 @@ export const WorldMap = ({
     } catch (e) {
       console.error('Failed to save map settings:', e);
     }
-  }, [mapStyle, mapView, mouseZoom]);
+  }, [mapStyle, mapProjection, mapView, mouseZoom]);
 
   // Initialize map
   useEffect(() => {
@@ -676,8 +691,12 @@ export const WorldMap = ({
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.invalidateSize();
+      try {
+        if (mapInstanceRef.current && mapRef.current && mapRef.current.isConnected) {
+          mapInstanceRef.current.invalidateSize();
+        }
+      } catch {
+        // Leaflet may throw if the container was removed mid-resize
       }
     });
     resizeObserver.observe(mapRef.current);
@@ -685,8 +704,12 @@ export const WorldMap = ({
     return () => {
       clearInterval(terminatorInterval);
       resizeObserver.disconnect();
-      map.remove();
       mapInstanceRef.current = null;
+      try {
+        map.remove();
+      } catch {
+        // Leaflet may throw during teardown if DOM was already removed
+      }
     };
   }, [leafletReady]); // leafletReady flips to true once window.L is confirmed available
 
@@ -1910,7 +1933,7 @@ export const WorldMap = ({
   return (
     <div style={{ position: 'relative', height: '100%', minHeight: '200px' }}>
       {/* Azimuthal equidistant projection (canvas-based) */}
-      {mapStyle === 'azimuthal' && (
+      {isAzimuthal && (
         <AzimuthalMap
           deLocation={deLocation}
           dxLocation={dxLocation}
@@ -1919,6 +1942,7 @@ export const WorldMap = ({
           potaSpots={potaSpots}
           wwffSpots={wwffSpots}
           sotaSpots={sotaSpots}
+          wwbotaSpots={wwbotaSpots}
           dxPaths={dxPaths}
           dxFilters={dxFilters}
           mapBandFilter={mapBandFilter}
@@ -1928,6 +1952,7 @@ export const WorldMap = ({
           showPOTA={showPOTA}
           showWWFF={showWWFF}
           showSOTA={showSOTA}
+          showWWBOTA={showWWBOTA}
           showPSKReporter={showPSKReporter}
           showPSKPaths={showPSKPaths}
           showWSJTX={showWSJTX}
@@ -1936,6 +1961,10 @@ export const WorldMap = ({
           callsign={callsign}
           hideOverlays={hideOverlays}
           hideUi={mapUiHidden}
+          tileStyle={mapStyle}
+          gibsOffset={gibsOffset}
+          lowMemoryMode={lowMemoryMode}
+          onMapReady={handleAzimuthalMapReady}
         />
       )}
 
@@ -1946,32 +1975,34 @@ export const WorldMap = ({
           width: '100%',
           borderRadius: '8px',
           background: mapStyle === 'countries' ? '#4a90d9' : undefined,
-          display: mapStyle === 'azimuthal' ? 'none' : undefined,
+          display: isAzimuthal ? 'none' : undefined,
         }}
       />
 
-      {/* Render all plugin layers (Leaflet only) */}
-      {mapStyle !== 'azimuthal' &&
-        mapInstanceRef.current &&
-        getAllLayers().map((layerDef) => (
+      {/* Render plugin layers on active map (Mercator or Azimuthal) */}
+      {(() => {
+        const activeMap = isAzimuthal ? azimuthalMapRef.current : mapInstanceRef.current;
+        if (!activeMap) return null;
+        return getAllLayers().map((layerDef) => (
           <PluginLayer
-            key={layerDef.id}
+            key={`${layerDef.id}-${isAzimuthal ? 'az' : 'merc'}`}
             plugin={layerDef}
             enabled={pluginLayerStates[layerDef.id]?.enabled ?? layerDef.defaultEnabled}
             opacity={pluginLayerStates[layerDef.id]?.opacity ?? layerDef.defaultOpacity}
             mapBandFilter={mapBandFilter}
             config={pluginLayerStates[layerDef.id]?.config ?? layerDef.config}
-            map={mapInstanceRef.current}
+            map={activeMap}
             satellites={satellites}
             allUnits={allUnits}
             callsign={callsign}
             locator={deLocator}
             lowMemoryMode={lowMemoryMode}
           />
-        ))}
+        ));
+      })()}
 
       {/* Unified map control dock */}
-      {mapStyle !== 'azimuthal' && (
+      {!isAzimuthal && (
         <div
           style={{
             position: 'absolute',
@@ -2170,34 +2201,78 @@ export const WorldMap = ({
         </div>
       )}
 
-      {/* Map style dropdown */}
+      {/* Map style dropdown + projection toggle */}
       {!mapUiHidden && (
-        <select
-          value={mapStyle}
-          id="mapStyle"
-          onChange={(e) => setMapStyle(e.target.value)}
+        <div
           style={{
             position: 'absolute',
             top: '10px',
             right: '10px',
-            background: 'rgba(0, 0, 0, 0.8)',
-            border: '1px solid #444',
-            color: '#00ffcc',
-            padding: '6px 10px',
-            borderRadius: '4px',
-            fontSize: '11px',
-            fontFamily: 'JetBrains Mono',
-            cursor: 'pointer',
             zIndex: 1000,
-            outline: 'none',
+            display: 'flex',
+            gap: '6px',
+            alignItems: 'center',
           }}
         >
-          {Object.entries(MAP_STYLES).map(([key, style]) => (
-            <option key={key} value={key}>
-              {style.name}
-            </option>
-          ))}
-        </select>
+          {/* Projection toggle */}
+          <div
+            style={{
+              display: 'flex',
+              background: 'rgba(0, 0, 0, 0.8)',
+              border: '1px solid #444',
+              borderRadius: '4px',
+              overflow: 'hidden',
+            }}
+          >
+            {[
+              { key: 'mercator', label: 'Flat' },
+              { key: 'azimuthal', label: 'Azimuthal' },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setMapProjection(key)}
+                style={{
+                  background: mapProjection === key ? '#00ffcc' : 'transparent',
+                  color: mapProjection === key ? '#000' : '#888',
+                  border: 'none',
+                  padding: '5px 8px',
+                  fontSize: '10px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  cursor: 'pointer',
+                  fontWeight: mapProjection === key ? 'bold' : 'normal',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Style dropdown */}
+          <select
+            value={mapStyle}
+            id="mapStyle"
+            onChange={(e) => setMapStyle(e.target.value)}
+            style={{
+              background: 'rgba(0, 0, 0, 0.8)',
+              border: '1px solid #444',
+              color: '#00ffcc',
+              padding: '6px 10px',
+              borderRadius: '4px',
+              fontSize: '11px',
+              fontFamily: 'JetBrains Mono',
+              cursor: 'pointer',
+              outline: 'none',
+            }}
+          >
+            {Object.entries(MAP_STYLES)
+              .filter(([, style]) => !style.legacy)
+              .map(([key, style]) => (
+                <option key={key} value={key}>
+                  {style.name}
+                </option>
+              ))}
+          </select>
+        </div>
       )}
 
       {/* Satellite toggle */}
