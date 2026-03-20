@@ -398,6 +398,7 @@ export const MAP_STYLES = {
     url: '',
     attribution: 'Azimuthal Equidistant',
     isCanvas: true,
+    legacy: true, // Hidden from dropdown — projection is now a separate toggle
   },
 };
 

@@ -8,6 +8,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { getBandColor, getBandFromFreq } from '../utils/callsign.js';
 import { calculateGridSquare } from '../utils/geo.js';
+import { MAP_STYLES } from '../utils/config.js';
+import { createTileReprojector } from '../utils/tileReproject.js';
 
 // ── Projection Math ────────────────────────────────────────
 const DEG = Math.PI / 180;
@@ -102,15 +104,21 @@ export default function AzimuthalMap({
   callsign,
   hideOverlays,
   hideUi = false,
+  tileStyle = null,
+  gibsOffset = 0,
+  lowMemoryMode = false,
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const geoRef = useRef(null);
+  const reprojRef = useRef(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 }); // pixel offset
   const dragRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
+  const [tilesReady, setTilesReady] = useState(false);
+  const interactingRef = useRef(false);
 
   const selectedMapBands = Array.isArray(mapBandFilter)
     ? new Set(mapBandFilter.map((b) => normalizeBandKey(b)).filter(Boolean))
@@ -130,6 +138,70 @@ export default function AzimuthalMap({
     fetchLand().then((geo) => {
       geoRef.current = geo;
     });
+  }, []);
+
+  // Resolve tile URL template for current style
+  const useTiles = tileStyle && tileStyle !== 'plain' && MAP_STYLES[tileStyle] && !MAP_STYLES[tileStyle].isCanvas;
+  const tileUrlTemplate = useTiles
+    ? tileStyle === 'MODIS'
+      ? (() => {
+          const date = new Date(Date.now() - ((gibsOffset || 0) * 24 + 12) * 60 * 60 * 1000);
+          const ds = date.toISOString().split('T')[0];
+          return `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${ds}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`;
+        })()
+      : MAP_STYLES[tileStyle].url
+    : null;
+
+  // Init / destroy / update reprojector
+  useEffect(() => {
+    if (!tileUrlTemplate) {
+      if (reprojRef.current) {
+        reprojRef.current.destroy();
+        reprojRef.current = null;
+      }
+      setTilesReady(false);
+      return;
+    }
+
+    if (!reprojRef.current) {
+      reprojRef.current = createTileReprojector({
+        tileUrlTemplate,
+        onProgress: (p) => {
+          if (p >= 1) setTilesReady(true);
+        },
+      });
+    } else {
+      reprojRef.current.setUrl(tileUrlTemplate);
+    }
+    // Force re-render by marking tiles not ready, then trigger load
+    setTilesReady(false);
+    const rp = reprojRef.current;
+    rp.render({
+      canvasWidth: size.w,
+      canvasHeight: size.h,
+      centerLat: lat0,
+      centerLon: lon0,
+      zoom,
+      panX: pan.x,
+      panY: pan.y,
+      lowMemory: lowMemoryMode,
+    })
+      .then(() => setTilesReady(true))
+      .catch(() => {});
+
+    return () => {
+      // Don't destroy on every re-render, only on unmount
+    };
+  }, [tileUrlTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (reprojRef.current) {
+        reprojRef.current.destroy();
+        reprojRef.current = null;
+      }
+    };
   }, []);
 
   // Resize observer
@@ -196,40 +268,75 @@ export default function AzimuthalMap({
     ctx.fill();
     ctx.clip();
 
-    // ── Land masses ──────────────────────────────────────
-    const geo = geoRef.current;
-    if (geo?.features) {
-      ctx.fillStyle = '#1a2a3a';
-      ctx.strokeStyle = '#2a3a4a';
-      ctx.lineWidth = 0.5;
+    // ── Globe background: tile imagery or GeoJSON polygons ──
+    let tileImageDrawn = false;
+    if (useTiles && reprojRef.current && tilesReady) {
+      try {
+        const imageData = reprojRef.current.render({
+          canvasWidth: size.w,
+          canvasHeight: size.h,
+          centerLat: lat0,
+          centerLon: lon0,
+          zoom,
+          panX: pan.x,
+          panY: pan.y,
+          halfRes: interactingRef.current,
+          lowMemory: lowMemoryMode,
+        });
+        if (imageData && imageData.then) {
+          // async — tiles not ready yet, fall through to GeoJSON
+        } else if (imageData) {
+          ctx.putImageData(imageData, 0, 0);
+          tileImageDrawn = true;
+        }
+      } catch (e) {
+        console.warn('[AzimuthalMap] Tile render failed, falling back to plain:', e);
+      }
+    }
 
-      geo.features.forEach((feature) => {
-        const geom = feature.geometry;
-        if (!geom) return;
-        const rings =
-          geom.type === 'Polygon' ? [geom.coordinates] : geom.type === 'MultiPolygon' ? geom.coordinates : [];
+    // Fall back to GeoJSON land masses if no tile imagery
+    if (!tileImageDrawn) {
+      const geo = geoRef.current;
+      if (geo?.features) {
+        ctx.fillStyle = '#1a2a3a';
+        ctx.strokeStyle = '#2a3a4a';
+        ctx.lineWidth = 0.5;
 
-        rings.forEach((polygon) => {
-          polygon.forEach((ring) => {
-            if (ring.length < 3) return;
-            ctx.beginPath();
-            let started = false;
-            for (let i = 0; i < ring.length; i++) {
-              const [lon, lat] = ring[i];
-              const p = project(lat, lon, lat0, lon0);
-              const px = cx + p.x * scale;
-              const py = cy + p.y * scale;
-              if (!started) {
-                ctx.moveTo(px, py);
-                started = true;
-              } else ctx.lineTo(px, py);
-            }
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
+        geo.features.forEach((feature) => {
+          const geom = feature.geometry;
+          if (!geom) return;
+          const rings =
+            geom.type === 'Polygon' ? [geom.coordinates] : geom.type === 'MultiPolygon' ? geom.coordinates : [];
+
+          rings.forEach((polygon) => {
+            polygon.forEach((ring) => {
+              if (ring.length < 3) return;
+              ctx.beginPath();
+              let started = false;
+              for (let i = 0; i < ring.length; i++) {
+                const [lon, lat] = ring[i];
+                const p = project(lat, lon, lat0, lon0);
+                const px = cx + p.x * scale;
+                const py = cy + p.y * scale;
+                if (!started) {
+                  ctx.moveTo(px, py);
+                  started = true;
+                } else ctx.lineTo(px, py);
+              }
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+            });
           });
         });
-      });
+      }
+    }
+
+    // Re-clip after putImageData (putImageData ignores clip)
+    if (tileImageDrawn) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.clip();
     }
 
     // ── Distance rings ───────────────────────────────────
@@ -567,11 +674,20 @@ export default function AzimuthalMap({
     showWSJTX,
     hideOverlays,
     toCanvas,
+    useTiles,
+    tilesReady,
+    lowMemoryMode,
   ]);
 
   // ── Mouse handlers ───────────────────────────────────────
+  const interactTimer = useRef(null);
   const handleWheel = useCallback((e) => {
     e.preventDefault();
+    interactingRef.current = true;
+    clearTimeout(interactTimer.current);
+    interactTimer.current = setTimeout(() => {
+      interactingRef.current = false;
+    }, 300);
     setZoom((prev) => Math.max(0.5, Math.min(8, prev * (e.deltaY < 0 ? 1.15 : 0.87))));
   }, []);
 

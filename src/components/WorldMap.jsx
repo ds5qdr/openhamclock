@@ -367,7 +367,12 @@ export const WorldMap = ({
     }
   };
   const storedSettings = getStoredMapSettings();
-  const [mapStyle, setMapStyle] = useState(storedSettings.mapStyle || 'dark');
+  // Migration: saved isAzimuthal → split into projection + style
+  const initialStyle = storedSettings.isAzimuthal ? 'dark' : storedSettings.mapStyle || 'dark';
+  const initialProjection = storedSettings.isAzimuthal ? 'azimuthal' : storedSettings.mapProjection || 'mercator';
+  const [mapStyle, setMapStyle] = useState(initialStyle);
+  const [mapProjection, setMapProjection] = useState(initialProjection);
+  const isAzimuthal = mapProjection === 'azimuthal';
   const [bandColorVersion, setBandColorVersion] = useState(0);
   const [editingBand, setEditingBand] = useState(null);
   const [editingColor, setEditingColor] = useState('#ff6666');
@@ -520,6 +525,7 @@ export const WorldMap = ({
         JSON.stringify({
           ...existing,
           mapStyle,
+          mapProjection,
           center: mapView.center,
           zoom: mapView.zoom,
           wheelPxPerZoomLevel: getScaledZoomLevel(mouseZoom),
@@ -528,7 +534,7 @@ export const WorldMap = ({
     } catch (e) {
       console.error('Failed to save map settings:', e);
     }
-  }, [mapStyle, mapView, mouseZoom]);
+  }, [mapStyle, mapProjection, mapView, mouseZoom]);
 
   // Initialize map
   useEffect(() => {
@@ -1918,7 +1924,7 @@ export const WorldMap = ({
   return (
     <div style={{ position: 'relative', height: '100%', minHeight: '200px' }}>
       {/* Azimuthal equidistant projection (canvas-based) */}
-      {mapStyle === 'azimuthal' && (
+      {isAzimuthal && (
         <AzimuthalMap
           deLocation={deLocation}
           dxLocation={dxLocation}
@@ -1944,6 +1950,9 @@ export const WorldMap = ({
           callsign={callsign}
           hideOverlays={hideOverlays}
           hideUi={mapUiHidden}
+          tileStyle={mapStyle}
+          gibsOffset={gibsOffset}
+          lowMemoryMode={lowMemoryMode}
         />
       )}
 
@@ -1954,12 +1963,12 @@ export const WorldMap = ({
           width: '100%',
           borderRadius: '8px',
           background: mapStyle === 'countries' ? '#4a90d9' : undefined,
-          display: mapStyle === 'azimuthal' ? 'none' : undefined,
+          display: isAzimuthal ? 'none' : undefined,
         }}
       />
 
       {/* Render all plugin layers (Leaflet only) */}
-      {mapStyle !== 'azimuthal' &&
+      {!isAzimuthal &&
         mapInstanceRef.current &&
         getAllLayers().map((layerDef) => (
           <PluginLayer
@@ -1979,7 +1988,7 @@ export const WorldMap = ({
         ))}
 
       {/* Unified map control dock */}
-      {mapStyle !== 'azimuthal' && (
+      {!isAzimuthal && (
         <div
           style={{
             position: 'absolute',
@@ -2178,34 +2187,78 @@ export const WorldMap = ({
         </div>
       )}
 
-      {/* Map style dropdown */}
+      {/* Map style dropdown + projection toggle */}
       {!mapUiHidden && (
-        <select
-          value={mapStyle}
-          id="mapStyle"
-          onChange={(e) => setMapStyle(e.target.value)}
+        <div
           style={{
             position: 'absolute',
             top: '10px',
             right: '10px',
-            background: 'rgba(0, 0, 0, 0.8)',
-            border: '1px solid #444',
-            color: '#00ffcc',
-            padding: '6px 10px',
-            borderRadius: '4px',
-            fontSize: '11px',
-            fontFamily: 'JetBrains Mono',
-            cursor: 'pointer',
             zIndex: 1000,
-            outline: 'none',
+            display: 'flex',
+            gap: '6px',
+            alignItems: 'center',
           }}
         >
-          {Object.entries(MAP_STYLES).map(([key, style]) => (
-            <option key={key} value={key}>
-              {style.name}
-            </option>
-          ))}
-        </select>
+          {/* Projection toggle */}
+          <div
+            style={{
+              display: 'flex',
+              background: 'rgba(0, 0, 0, 0.8)',
+              border: '1px solid #444',
+              borderRadius: '4px',
+              overflow: 'hidden',
+            }}
+          >
+            {[
+              { key: 'mercator', label: 'Flat' },
+              { key: 'azimuthal', label: 'Azimuthal' },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setMapProjection(key)}
+                style={{
+                  background: mapProjection === key ? '#00ffcc' : 'transparent',
+                  color: mapProjection === key ? '#000' : '#888',
+                  border: 'none',
+                  padding: '5px 8px',
+                  fontSize: '10px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  cursor: 'pointer',
+                  fontWeight: mapProjection === key ? 'bold' : 'normal',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Style dropdown */}
+          <select
+            value={mapStyle}
+            id="mapStyle"
+            onChange={(e) => setMapStyle(e.target.value)}
+            style={{
+              background: 'rgba(0, 0, 0, 0.8)',
+              border: '1px solid #444',
+              color: '#00ffcc',
+              padding: '6px 10px',
+              borderRadius: '4px',
+              fontSize: '11px',
+              fontFamily: 'JetBrains Mono',
+              cursor: 'pointer',
+              outline: 'none',
+            }}
+          >
+            {Object.entries(MAP_STYLES)
+              .filter(([, style]) => !style.legacy)
+              .map(([key, style]) => (
+                <option key={key} value={key}>
+                  {style.name}
+                </option>
+              ))}
+          </select>
+        </div>
       )}
 
       {/* Satellite toggle */}
