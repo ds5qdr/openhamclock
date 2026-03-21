@@ -908,8 +908,13 @@ module.exports = function (app, ctx) {
             status: upstream.isBackedOff('pskreporter') ? 'backoff' : 'ok',
             backoffRemaining: upstream.backoffRemaining('pskreporter'),
             consecutive: upstream.backoffs.get('pskreporter')?.consecutive || 0,
-            inFlightRequests: [...upstream.inFlight.keys()].filter((k) => k.startsWith('psk:') || k.startsWith('wspr:'))
-              .length,
+            inFlightRequests: [...upstream.inFlight.keys()].filter((k) => k.startsWith('psk:')).length,
+          },
+          wspr: {
+            status: upstream.isBackedOff('wspr') ? 'backoff' : 'ok',
+            backoffRemaining: upstream.backoffRemaining('wspr'),
+            consecutive: upstream.backoffs.get('wspr')?.consecutive || 0,
+            inFlightRequests: [...upstream.inFlight.keys()].filter((k) => k.startsWith('wspr:')).length,
           },
           weather: {
             status: 'client-direct',
@@ -934,6 +939,22 @@ module.exports = function (app, ctx) {
       // HTML dashboard for browsers
       res.type('html').send(generateStatusDashboard());
     }
+  });
+
+  // ============================================
+  // RESET UPSTREAM BACKOFF
+  // ============================================
+  app.post('/api/admin/reset-backoff', writeLimiter, requireWriteAuth, (req, res) => {
+    const service = req.query.service || req.body?.service;
+    if (!service) {
+      // Reset all backoffs
+      upstream.backoffs.clear();
+      logInfo('[Admin] All upstream backoffs cleared');
+      return res.json({ ok: true, reset: 'all' });
+    }
+    upstream.resetBackoff(service);
+    logInfo(`[Admin] Upstream backoff cleared for: ${service}`);
+    res.json({ ok: true, reset: service });
   });
 
   // ============================================
