@@ -7,9 +7,7 @@ import CallsignLink from './CallsignLink.jsx';
 import { IconSearch, IconRefresh, IconMap, IconTag } from './Icons.jsx';
 
 export const ActivatePanel = ({
-  name,
-  shade,
-  shape,
+  mapDefs,
   data,
   loading,
   lastUpdated,
@@ -49,11 +47,11 @@ export const ActivatePanel = ({
         }}
       >
         <span>
-          {shape && shade ? (
+          {mapDefs.shape && mapDefs.color ? (
             <span
               style={{
                 display: 'inline-block',
-                background: shade,
+                background: mapDefs.color,
                 color: '#000',
                 padding: '1px 4px',
                 borderRadius: '3px',
@@ -63,14 +61,14 @@ export const ActivatePanel = ({
                 lineHeight: 1.2,
                 verticalAlign: 'middle',
               }}
-              title={`Map marker: ${shade}`}
+              title={`Map marker: ${mapDefs.color}`}
             >
-              {shape}
+              {mapDefs.shape}
             </span>
           ) : (
             '▲ '
           )}
-          {name} ACTIVATORS {data?.length > 0 ? `(${data.length})` : ''}
+          {mapDefs.name} ACTIVATORS {data?.length > 0 ? `(${data.length})` : ''}
           {checkedTime && (
             <span
               style={{
@@ -119,7 +117,9 @@ export const ActivatePanel = ({
           {typeof onToggleLabelsOnMap === 'function' && (
             <button
               onClick={onToggleLabelsOnMap}
-              title={showLabelsOnMap ? `Hide ${name} callsigns on map` : `Show ${name} callsigns on map`}
+              title={
+                showLabelsOnMap ? `Hide ${mapDefs.name} callsigns on map` : `Show ${mapDefs.name} callsigns on map`
+              }
               style={{
                 background: showLabelsOnMap ? 'rgba(255, 170, 0, 0.22)' : 'rgba(100, 100, 100, 0.3)',
                 border: `1px solid ${showLabelsOnMap ? '#ffaa00' : '#666'}`,
@@ -137,7 +137,7 @@ export const ActivatePanel = ({
 
           <button
             onClick={onToggleMap}
-            title={showOnMap ? `Hide ${name} activators on map` : `Show ${name} activators on map`}
+            title={showOnMap ? `Hide ${mapDefs.name} activators on map` : `Show ${mapDefs.name} activators on map`}
             style={{
               // background: showOnMap ? 'rgba(68, 204, 68, 0.3)' : 'rgba(100, 100, 100, 0.3)',
               background: showOnMap ? 'rgba(255, 170, 0, 0.22)' : 'rgba(100, 100, 100, 0.3)',

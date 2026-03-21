@@ -33,9 +33,7 @@ export const POTAPanel = ({
 }) => {
   return (
     <ActivatePanel
-      name={mapDefs.name}
-      shade={mapDefs.color}
-      shape={mapDefs.shape}
+      mapDefs={mapDefs}
       data={data}
       loading={loading}
       lastUpdated={lastUpdated}
