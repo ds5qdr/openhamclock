@@ -34,6 +34,8 @@ export const DEFAULT_CONFIG = {
   mouseZoom: 50, // Factor to affect rate of zooming with scrollwheel (1-100)
   timezone: '', // IANA timezone (e.g. 'America/Regina') — empty = browser default
   use12Hour: true,
+  swapHeaderClocks: false, // false = UTC first, true = Local first
+  showMutualReception: true, // Show gold star on PSK spots with mutual reception
   preventSleep: false, // Keep screen awake while app is open (tablet/kiosk mode)
   showSatellites: true,
   showPota: true,
@@ -61,6 +63,7 @@ export const DEFAULT_CONFIG = {
   },
   dxClusterSource: 'dxspider-proxy',
   customDxCluster: { enabled: false, host: '', port: 7300 },
+  udpDxCluster: { host: '', port: 12060 },
 };
 
 // Cache for server config
@@ -121,6 +124,10 @@ export const loadConfig = () => {
       showDxPaths: serverConfig.showDxPaths ?? config.showDxPaths,
       panels: { ...config.panels, ...serverConfig.panels },
       dxClusterSource: serverConfig.dxClusterSource || config.dxClusterSource,
+      udpDxCluster: {
+        host: serverConfig.dxUdpHost || config.udpDxCluster.host,
+        port: parseInt(serverConfig.dxUdpPort, 10) || config.udpDxCluster.port,
+      },
     };
   }
 
@@ -146,6 +153,7 @@ export const loadConfig = () => {
       defaultDX: localConfig.defaultDX || config.defaultDX,
       panels: { ...config.panels, ...localConfig.panels },
       refreshIntervals: { ...config.refreshIntervals, ...localConfig.refreshIntervals },
+      udpDxCluster: localConfig.udpDxCluster || config.udpDxCluster,
     };
   }
 

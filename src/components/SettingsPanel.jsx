@@ -43,6 +43,8 @@ export const SettingsPanel = ({
 
   const [callsign, setCallsign] = useState(config?.callsign || '');
   const [headerSize, setheaderSize] = useState(config?.headerSize || 1.0);
+  const [swapHeaderClocks, setSwapHeaderClocks] = useState(config?.swapHeaderClocks || false);
+  const [showMutualReception, setShowMutualReception] = useState(config?.showMutualReception ?? true);
   const [gridSquare, setGridSquare] = useState(config?.locator || '');
   const [lat, setLat] = useState(config?.location?.lat || 0);
   const [lon, setLon] = useState(config?.location?.lon || 0);
@@ -53,6 +55,7 @@ export const SettingsPanel = ({
   const [customDxCluster, setCustomDxCluster] = useState(
     config?.customDxCluster || { enabled: false, host: '', port: 7300 },
   );
+  const [udpDxCluster, setUdpDxCluster] = useState(config?.udpDxCluster || { host: '', port: 12060 });
   const [lowMemoryMode, setLowMemoryMode] = useState(config?.lowMemoryMode || false);
   const [preventSleep, setPreventSleep] = useState(config?.preventSleep || false);
   const [distUnits, setDistUnits] = useState(config?.allUnits?.dist || config?.units || 'imperial');
@@ -168,6 +171,7 @@ export const SettingsPanel = ({
       setTimezone(config.timezone || '');
       setDxClusterSource(config.dxClusterSource || 'dxspider-proxy');
       setCustomDxCluster(config.customDxCluster || { enabled: false, host: '', port: 7300 });
+      setUdpDxCluster(config.udpDxCluster || { host: '', port: 12060 });
       setLowMemoryMode(config.lowMemoryMode || false);
       setPreventSleep(config.preventSleep || false);
       setDistUnits(config.allUnits?.dist || config.units || 'imperial');
@@ -398,6 +402,8 @@ export const SettingsPanel = ({
       ...config,
       callsign: callsign.toUpperCase(),
       headerSize: headerSize,
+      swapHeaderClocks,
+      showMutualReception,
       location: { lat: parseFloat(lat), lon: parseFloat(lon) },
       theme,
       customTheme,
@@ -406,6 +412,7 @@ export const SettingsPanel = ({
       timezone,
       dxClusterSource,
       customDxCluster,
+      udpDxCluster,
       lowMemoryMode,
       preventSleep,
       // units,
@@ -1592,11 +1599,95 @@ export const SettingsPanel = ({
                 <option value="dxwatch">{t('station.settings.dx.option3')}</option>
                 <option value="auto">{t('station.settings.dx.option4')}</option>
                 <option value="custom">{t('station.settings.dx.custom.option')}</option>
+                <option value="udp">
+                  {t('station.settings.dx.udp.option', { defaultValue: 'UDP Spots (Local Network)' })}
+                </option>
               </select>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
                 {t('station.settings.dx.describe')}
               </div>
             </div>
+
+            {dxClusterSource === 'udp' && (
+              <div
+                style={{
+                  marginBottom: '20px',
+                  padding: '16px',
+                  background: 'var(--bg-tertiary)',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                }}
+              >
+                <label
+                  style={{
+                    display: 'block',
+                    marginBottom: '12px',
+                    color: 'var(--accent-cyan)',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                  }}
+                >
+                  {t('station.settings.dx.udp.title', { defaultValue: 'UDP Spot Listener' })}
+                </label>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label
+                    style={{ display: 'block', marginBottom: '4px', color: 'var(--text-muted)', fontSize: '11px' }}
+                  >
+                    {t('station.settings.dx.udp.host', { defaultValue: 'UDP IP Address (optional)' })}
+                  </label>
+                  <input
+                    type="text"
+                    value={udpDxCluster.host}
+                    onChange={(e) => setUdpDxCluster({ ...udpDxCluster, host: e.target.value.trim() })}
+                    placeholder={t('station.settings.dx.udp.host.placeholder', {
+                      defaultValue: 'Leave blank unless a specific sender/multicast IP is required',
+                    })}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '6px',
+                      color: 'var(--text-primary)',
+                      fontSize: '14px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label
+                    style={{ display: 'block', marginBottom: '4px', color: 'var(--text-muted)', fontSize: '11px' }}
+                  >
+                    {t('station.settings.dx.udp.port', { defaultValue: 'UDP Port' })}
+                  </label>
+                  <input
+                    type="number"
+                    value={udpDxCluster.port}
+                    onChange={(e) => setUdpDxCluster({ ...udpDxCluster, port: parseInt(e.target.value, 10) || 12060 })}
+                    placeholder={t('station.settings.dx.udp.port.placeholder', { defaultValue: '12060' })}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '6px',
+                      color: 'var(--text-primary)',
+                      fontSize: '14px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                    }}
+                  />
+                </div>
+
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                  {t('station.settings.dx.udp.help', {
+                    defaultValue:
+                      'OpenHamClock listens for UDP DX spot packets on this port and plots matched spots on the map.',
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Custom DX Cluster Settings */}
             {dxClusterSource === 'custom' && (
@@ -2315,6 +2406,57 @@ export const SettingsPanel = ({
                 }}
               >
                 {Number(headerSize).toFixed(1)}x
+              </div>
+            </div>
+
+            {/* Clock Order */}
+            <div style={{ marginBottom: '24px' }}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={swapHeaderClocks}
+                  onChange={(e) => setSwapHeaderClocks(e.target.checked)}
+                  style={{ accentColor: 'var(--accent-amber)' }}
+                />
+                Show Local Time before UTC in header
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                By default, UTC is shown first. Enable this to display Local Time first.
+              </div>
+            </div>
+
+            {/* Mutual Reception Indicator */}
+            <div style={{ marginBottom: '24px' }}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={showMutualReception}
+                  onChange={(e) => setShowMutualReception(e.target.checked)}
+                  style={{ accentColor: 'var(--accent-amber)' }}
+                />
+                Show mutual reception indicator on PSK Reporter spots
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                Marks spots with a gold star (★) when a station hears you AND you hear them on the same band, indicating
+                a QSO is likely possible.
               </div>
             </div>
 

@@ -26,6 +26,7 @@ import {
 } from '../components';
 import { useRig } from '../contexts/RigContext.jsx';
 import { calculateDistance, formatDistance } from '../utils/geo.js';
+import { findDXPathForSpot } from '../utils/dxClusterSpotMatcher';
 import { DXGridInput } from '../components/DXGridInput.jsx';
 import { DXFavorites } from '../components/DXFavorites.jsx';
 import DXCCSelect from '../components/DXCCSelect.jsx';
@@ -130,7 +131,7 @@ export default function ModernLayout(props) {
   const handleParkSpotClick = (spot) => tuneTo(spot);
   const handleDXSpotClick = (spot) => {
     tuneTo(spot);
-    const path = (dxClusterData.paths || []).find((p) => p.dxCall === spot.call);
+    const path = findDXPathForSpot(dxClusterData.paths || [], spot);
     if (path && path.dxLat != null && path.dxLon != null) {
       handleDXChange({ lat: path.dxLat, lon: path.dxLon });
     }
@@ -169,6 +170,7 @@ export default function ModernLayout(props) {
         showSatellites={mapLayers.showSatellites}
         showPSKReporter={mapLayers.showPSKReporter}
         showPSKPaths={mapLayers.showPSKPaths}
+        showMutualReception={config.showMutualReception !== false}
         wsjtxSpots={wsjtxMapSpots}
         showWSJTX={mapLayers.showWSJTX}
         showDXNews={mapLayers.showDXNews}
@@ -348,6 +350,7 @@ export default function ModernLayout(props) {
   const pskPanel = config.panels?.pskReporter?.visible !== false && (
     <PSKReporterPanel
       callsign={config.callsign}
+      showMutualReception={config.showMutualReception !== false}
       pskReporter={pskReporter}
       showOnMap={mapLayers.showPSKReporter}
       onToggleMap={togglePSKReporter}
