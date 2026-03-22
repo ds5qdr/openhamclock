@@ -458,9 +458,13 @@ export const SettingsPanel = ({
     dockable: t('station.settings.layout.dockable.describe'),
     emcomm: t('station.settings.layout.emcomm.describe'),
   };
+
   const unitString = (t) => {
-    return t == 'imperial' ? '🇺🇸 Imperial' : '🌍 Metric';
+    // Use "USA Customary" instead of "Imperial" to avoid confusion with UK Imperial units which are different,
+    // for instance 'inHg' is not a UK Imperial unit but is commonly used in USA.
+    return t == 'imperial' ? 'USA Customary' : 'Metric';
   };
+
   return (
     <div
       onClick={onClose}
@@ -996,7 +1000,7 @@ export const SettingsPanel = ({
               </select>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
                 {t('station.settings.timezone.describe')}
-                {timezone ? '' : t('station.settings.timezone.currentDefault')}
+                {timezone ? '' : ' ' + t('station.settings.timezone.currentDefault')}
               </div>
             </div>
 
@@ -1012,7 +1016,7 @@ export const SettingsPanel = ({
                   letterSpacing: '1px',
                 }}
               >
-                📏 Units
+                📏 zzz Units
               </label>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
@@ -1029,7 +1033,7 @@ export const SettingsPanel = ({
                     fontWeight: '600',
                   }}
                 >
-                  {`distance: ${unitString(distUnits)}`}
+                  {`zzz Distance: ${unitString(distUnits)}`}
                 </button>
                 <button
                   onClick={() => toggleTempUnits()}
@@ -1045,7 +1049,7 @@ export const SettingsPanel = ({
                     fontWeight: '600',
                   }}
                 >
-                  {`Temperature: ${unitString(tempUnits)}`}
+                  {`zzz Temperature: ${unitString(tempUnits)}`}
                 </button>
                 <button
                   onClick={() => togglePressUnits()}
@@ -1061,7 +1065,7 @@ export const SettingsPanel = ({
                     fontWeight: '600',
                   }}
                 >
-                  {`Pressure: ${unitString(pressUnits)}`}
+                  {`zzz Pressure: ${unitString(pressUnits)}`}
                 </button>
               </div>
             </div>
