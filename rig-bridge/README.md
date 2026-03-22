@@ -235,6 +235,14 @@ You should see:
 
 The WSJT-X Relay is an **integration plugin** (not a radio plugin) that listens for WSJT-X UDP packets on the local machine and forwards decoded messages to an OpenHamClock server in real-time. This lets OpenHamClock display your FT8/FT4 decodes as DX spots without any manual intervention.
 
+> **⚠️ Startup order matters when running on the same machine as OpenHamClock**
+>
+> Both rig-bridge and a locally-running OpenHamClock instance listen on the same UDP port (default **2237**) for WSJT-X packets. Only one process can hold the port at a time.
+>
+> **Always start rig-bridge first.** It will bind UDP 2237 and relay decoded messages to OHC via HTTP. If OpenHamClock starts first and claims the port, rig-bridge will log `UDP port already in use` and receive nothing — the relay will be silently inactive.
+>
+> If you see that warning in the rig-bridge console log, stop OpenHamClock, restart rig-bridge, then start OpenHamClock again.
+
 ### Getting your relay credentials
 
 The relay requires two values from your OpenHamClock server: a **relay key** and a **session ID**. There are two ways to set them up:
