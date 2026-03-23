@@ -40,7 +40,7 @@ const PSKReporterPanel = ({
   wsjtxSessionId,
   showWSJTXOnMap,
   onToggleWSJTXMap,
-  wsjtxRelayMulticast,
+  wsjtxRelayMulticast = { enabled: false, address: '224.0.0.1' },
 }) => {
   const { t } = useTranslation();
   const [panelMode, setPanelMode] = useState(() => {
